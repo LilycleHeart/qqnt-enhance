@@ -1,16 +1,19 @@
 // QQ 增强 · 本地表情包（并进 QQ 自带的表情面板）
-//   - 表情面板底部分类栏里，「我的收藏」后面多一个「本地表情」
-//   - 切过去后，面板内容区换成本地表情：顶部是分组（收藏 + 表情文件夹里的每个子文件夹）
+//   - 表情面板底部分类栏里，「我的收藏」后面多一个「本地表情」切换按钮
+//   - 切过去后，整个面板（连同底部分类栏）换成本地表情：底栏是收藏 + 每个子文件夹，
+//     文件夹用它里面第一张图做缩略图；底栏最左边的按钮切回 QQ 自带的表情
 //   - 点图片直接发送并收起面板；Ctrl/Shift + 点击发送后不收起；右键或右上角星标切换收藏
 //   - 图片用 QQ 自己的 appimg:// 协议读本地文件
 // 表情面板是 Vue 管理的，往里塞的节点会被重渲染清掉：
-//   分类按钮由主循环反复调 ensure() 补回；内容层不放进面板，而是挂在 body 上、按面板位置盖上去。
+//   切换按钮由主循环反复调 ensure() 补回；本地表情页不放进面板，而是挂在 body 上、按面板位置整个盖上去。
 
 const ICON = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M22 16V4c0-1.1-.9-2-2-2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14c0 1.1.9 2 2 2h14v-2H4V6H2z"/></svg>';
 const STAR = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
 const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>';
 const ICON_REFRESH = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
 
+const ICON_BACK = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>';
+const STAR_BIG = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
 const LABEL = "本地表情";
 const FAV = "\u0000fav";
 const TAB_KEY = "qq-enhance-sticker-tab";
@@ -19,7 +22,7 @@ const ACTIVE_CLS = "tabs-container-item-active";
 const CSS = `
 #qe-sticker-view {
   position: fixed; z-index: 4500; display: none; flex-direction: column; box-sizing: border-box;
-  border-radius: 12px 12px 0 0; overflow: hidden;
+  overflow: hidden;
   background: transparent;
   color: var(--ll-on-glass, var(--text_primary, #222)); font-size: 13px;
 }
@@ -42,16 +45,25 @@ const CSS = `
 #qe-sticker-view .qe-sp-cell:hover .qe-sp-star { display: flex; }
 #qe-sticker-view .qe-sp-cell.is-fav .qe-sp-star { display: flex; color: #f5b400; background: transparent; }
 #qe-sticker-view .qe-sp-star:hover { background: rgba(127,127,127,.32); }
-#qe-sticker-view .qe-sp-bar { display: flex; align-items: center; gap: 2px; padding: 8px 8px 4px; flex: 0 0 auto; }
-#qe-sticker-view .qe-sp-tabs { flex: 1; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+#qe-sticker-view .qe-sp-title {
+  grid-column: 1 / -1; padding: 4px 4px 2px; font-size: 12px;
+  color: var(--ll-on-glass-2, var(--text_secondary, #888));
+}
+#qe-sticker-view .qe-sp-divide { flex: 0 0 1px; margin: 0 8px; background: rgba(127,127,127,.18); }
+#qe-sticker-view .qe-sp-bar { display: flex; align-items: center; gap: 2px; padding: 6px 8px; flex: 0 0 auto; height: 48px; box-sizing: border-box; }
+#qe-sticker-view .qe-sp-tabs { flex: 1; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
 #qe-sticker-view .qe-sp-tabs::-webkit-scrollbar { display: none; }
 #qe-sticker-view .qe-sp-tab, #qe-sticker-view .qe-sp-act {
-  flex: 0 0 auto; height: 26px; padding: 0 10px; border: none; border-radius: 8px; cursor: pointer;
-  display: flex; align-items: center; gap: 4px; background: transparent; color: inherit; font: inherit; white-space: nowrap;
+  flex: 0 0 auto; width: 36px; height: 36px; padding: 0; border: none; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; background: transparent;
+  color: var(--icon_primary, var(--ll-on-glass, currentColor)); font: inherit;
 }
-#qe-sticker-view .qe-sp-act { padding: 0 6px; color: var(--ll-on-glass-2, var(--text_secondary, #888)); }
+#qe-sticker-view .qe-sp-act { width: 28px; color: var(--ll-on-glass-2, var(--text_secondary, #888)); }
+#qe-sticker-view .qe-sp-back { margin-right: 2px; }
+#qe-sticker-view .qe-sp-tab img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; pointer-events: none; }
 #qe-sticker-view .qe-sp-tab:hover, #qe-sticker-view .qe-sp-act:hover { background: var(--overlay_hover, rgba(127,127,127,.14)); }
-#qe-sticker-view .qe-sp-tab.is-active { background: rgba(var(--ll-brand-rgb, 0,153,255), .2); color: var(--ll-brand, var(--brand_standard, #0099ff)); }
+#qe-sticker-view .qe-sp-tab.is-active { background: var(--overlay_active, rgba(var(--ll-brand-rgb, 0,153,255), .2)); }
+#qe-sticker-view .qe-sp-tab.is-fav-tab.is-active { color: #f5b400; }
 #qe-sticker-view .qe-sp-empty {
   grid-column: 1 / -1; padding: 40px 16px; text-align: center; line-height: 1.7;
   color: var(--ll-on-glass-2, var(--text_secondary, #888));
@@ -59,7 +71,9 @@ const CSS = `
 #qe-sticker-view .qe-sp-empty b { color: var(--ll-on-glass, var(--text_primary, #222)); font-weight: 600; }
 /* 本地表情页打开时，把 QQ 自己的内容藏起来（面板底色和分类栏留着） */
 body.qe-st-active .expression-panel .sticker-panel > :first-child,
-body.qe-st-active .expression-panel .sticker-panel__pages { visibility: hidden !important; }
+body.qe-st-active .expression-panel .sticker-panel__pages,
+body.qe-st-active .expression-panel .sticker-panel__divide,
+body.qe-st-active .expression-panel .sticker-panel__bar { visibility: hidden !important; }
 .expression-panel .qe-st-tab { color: var(--icon_primary, currentColor); }
 .expression-panel .qe-st-tab svg { width: 24px; height: 24px; display: block; }
 `;
@@ -115,10 +129,12 @@ export function installStickers(api, getConfig, toast) {
         if (view) return;
         view = document.createElement("div");
         view.id = "qe-sticker-view";
-        view.innerHTML = '<div class="qe-sp-bar"><div class="qe-sp-tabs"></div>' +
+        view.innerHTML = '<div class="qe-sp-grid"></div><div class="qe-sp-divide"></div>' +
+            '<div class="qe-sp-bar">' +
+            '<button type="button" class="qe-sp-tab qe-sp-back" data-act="back" title="切回 QQ 表情">' + ICON_BACK + '</button>' +
+            '<div class="qe-sp-tabs"></div>' +
             '<button type="button" class="qe-sp-act" data-act="refresh" title="刷新">' + ICON_REFRESH + '</button>' +
-            '<button type="button" class="qe-sp-act" data-act="open" title="打开表情文件夹">' + ICON_FOLDER + '</button></div>' +
-            '<div class="qe-sp-grid"></div>';
+            '<button type="button" class="qe-sp-act" data-act="open" title="打开表情文件夹">' + ICON_FOLDER + '</button></div>';
         grid = view.querySelector(".qe-sp-grid");
         tabsEl = view.querySelector(".qe-sp-tabs");
         document.body.appendChild(view);
@@ -127,9 +143,10 @@ export function installStickers(api, getConfig, toast) {
         view.addEventListener("mousedown", e => e.stopPropagation());
         view.addEventListener("click", e => {
             e.stopPropagation();
-            const act = e.target.closest(".qe-sp-act");
+            const act = e.target.closest("[data-act]");
             if (act) {
-                if (act.dataset.act === "open") api.stickerOpenDir();
+                if (act.dataset.act === "back") { lastOurs = false; deactivate(); }
+                else if (act.dataset.act === "open") api.stickerOpenDir();
                 else reload().then(() => toast("已刷新"));
                 return;
             }
@@ -147,7 +164,7 @@ export function installStickers(api, getConfig, toast) {
             if (cell) toggleFav(cell.dataset.path);
         });
         view.addEventListener("wheel", e => {
-            if (!e.target.closest(".qe-sp-tabs")) return;
+            if (!e.target.closest(".qe-sp-bar")) return;
             tabsEl.scrollLeft += e.deltaY;
             e.preventDefault();
         }, { passive: false });
@@ -184,24 +201,42 @@ export function installStickers(api, getConfig, toast) {
     function render() {
         if (!view) return;
         tabsEl.innerHTML = "";
-        const tabs = [[FAV, "收藏"]].concat(data.groups.map(g => [g.name, g.name]));
-        for (const [id, name] of tabs) {
+        const tabs = [{ id: FAV, name: "收藏" }].concat(data.groups.map(g => ({ id: g.name, name: g.name, cover: g.files[0] })));
+        for (const it of tabs) {
             const b = document.createElement("button");
             b.type = "button";
-            b.className = "qe-sp-tab" + (id === tab ? " is-active" : "");
-            b.dataset.tab = id;
-            if (id === FAV) b.innerHTML = STAR;
-            b.appendChild(document.createTextNode(name));
+            b.className = "qe-sp-tab" + (it.id === tab ? " is-active" : "") + (it.id === FAV ? " is-fav-tab" : "");
+            b.dataset.tab = it.id;
+            b.title = it.name;
+            if (it.id === FAV) b.innerHTML = STAR_BIG;
+            else {
+                const img = document.createElement("img");
+                img.loading = "lazy";
+                img.draggable = false;
+                img.src = appimg(it.cover);
+                b.appendChild(img);
+            }
             tabsEl.appendChild(b);
+        }
+        const cur = tabsEl.querySelector(".is-active");
+        // 只滚底栏自己：scrollIntoView 会连带滚动外层，QQ 看到滚动就把表情面板收起了
+        if (cur) {
+            const l = cur.offsetLeft - tabsEl.offsetLeft, rgt = l + cur.offsetWidth;
+            if (l < tabsEl.scrollLeft) tabsEl.scrollLeft = l;
+            else if (rgt > tabsEl.scrollLeft + tabsEl.clientWidth) tabsEl.scrollLeft = rgt - tabsEl.clientWidth;
         }
         const files = tab === FAV ? data.favs : ((data.groups.find(g => g.name === tab) || {}).files || []);
         grid.innerHTML = "";
+        const title = document.createElement("div");
+        title.className = "qe-sp-title";
+        title.textContent = (tab === FAV ? "收藏" : tab) + (files.length ? " · " + files.length : "");
+        grid.appendChild(title);
         if (!files.length) {
             const empty = document.createElement("div");
             empty.className = "qe-sp-empty";
             if (tab === FAV) empty.innerHTML = data.groups.length
                 ? "还没有收藏<br>在表情上点右上角的星标，或右键它，就会收进这里"
-                : "表情文件夹是空的<br>点右上角<b>文件夹</b>按钮，把图片放进去<br>每个子文件夹会成为一个分组";
+                : "表情文件夹是空的<br>点右下角<b>文件夹</b>按钮，把图片放进去<br>每个子文件夹会成为一个分组";
             else empty.textContent = "这个分组里没有图片";
             grid.appendChild(empty);
             return;
@@ -228,17 +263,16 @@ export function installStickers(api, getConfig, toast) {
         grid.appendChild(frag);
     }
 
-    // 盖住面板的内容区（分类栏上面那一块），分类栏留给用户切回 QQ 自带的表情
+    // 整个盖住 QQ 的表情面板（内容区 + 分类栏）
     function place() {
         const sp = stickerPanel();
         if (!sp) return false;
         const r = sp.getBoundingClientRect();
-        const cut = sp.querySelector(".sticker-panel__divide") || sp.querySelector(".sticker-panel__bar");
-        const bottom = cut ? cut.getBoundingClientRect().top : r.bottom - 48;
         view.style.left = Math.round(r.left) + "px";
         view.style.top = Math.round(r.top) + "px";
         view.style.width = Math.round(r.width) + "px";
-        view.style.height = Math.max(60, Math.round(bottom - r.top)) + "px";
+        view.style.height = Math.round(r.height) + "px";
+        view.style.borderRadius = getComputedStyle(sp.closest(".expression-panel") || sp).borderRadius;
         return true;
     }
 
