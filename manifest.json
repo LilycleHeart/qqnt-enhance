@@ -4,7 +4,7 @@
   "name": "QQ 增强",
   "slug": "qq-enhance",
   "description": "功能合集：防撤回、记住浏览位置、右键复读、引用时不带 @、本地表情包。每项可在设置页单独开关。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "thumb": "./assets/icon.svg",
   "author": { "name": "LilycleHeart", "link": "https://github.com/LilycleHeart" },
   "homepage": "https://github.com/LilycleHeart/qqnt-enhance",
