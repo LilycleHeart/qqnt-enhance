@@ -1,0 +1,19 @@
+{
+  "manifest_version": 4,
+  "type": "extension",
+  "name": "QQ 增强",
+  "slug": "qq-enhance",
+  "description": "功能合集：防撤回、记住浏览位置、右键复读、引用时不带 @。每项可在设置页单独开关。",
+  "version": "1.0.0",
+  "thumb": "./assets/icon.svg",
+  "author": { "name": "LilycleHeart", "link": "https://github.com/LilycleHeart" },
+  "homepage": "https://github.com/LilycleHeart/qqnt-enhance",
+  "repo": "LilycleHeart/qqnt-enhance",
+  "dependencies": [],
+  "platform": ["win32", "linux", "darwin"],
+  "injects": {
+    "main": "./main/index.js",
+    "preload": "./preload/index.js",
+    "renderer": "./renderer/index.js"
+  }
+}
