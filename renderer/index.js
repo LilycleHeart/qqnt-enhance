@@ -6,10 +6,10 @@
 //   5. 本地表情包：表情文件夹按子文件夹分组，另有一个收藏分组（见 stickers.js）
 //   6. 设置页：每项单独开关
 // 消息数据从 .message 元素上的 __VUE__[0].props.msgRecord 读（QQ 9.9.36 实测）。
-import { installStickers } from "./stickers.js";
+import { installStickers, NATIVE_TABS } from "./stickers.js";
 
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "" };
+let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 let stickers = null;
 
 function recordOf(el) {
@@ -351,7 +351,7 @@ export const onSettingWindowCreated = async view => {
 </setting-section>
 <setting-section data-title="本地表情包">
   <setting-panel>
-    <setting-list data-direction="column">
+    <setting-list data-direction="column" class="qe-st-list">
       <setting-item>
         <div>
           <setting-text>表情文件夹</setting-text>
@@ -395,6 +395,24 @@ export const onSettingWindowCreated = async view => {
             try { cfg = await api.setConfig({ [key]: on }); } catch (e) { sw.toggleAttribute("is-active", !on); }
         });
         list.appendChild(item);
+    }
+
+    // 表情面板里 QQ 自带的三个按钮：可以分别隐藏
+    const stList = view.querySelector(".qe-st-list");
+    for (const [key, label] of NATIVE_TABS) {
+        const item = document.createElement("setting-item");
+        item.innerHTML = `<div><setting-text></setting-text><setting-text data-type="secondary"></setting-text></div><setting-switch></setting-switch>`;
+        const texts = item.querySelectorAll("setting-text");
+        texts[0].textContent = "表情面板显示「" + label + "」";
+        texts[1].textContent = "关掉后，表情面板底栏不再显示 QQ 自带的这个按钮。";
+        const sw = item.querySelector("setting-switch");
+        sw.toggleAttribute("is-active", cfg[key] !== false);
+        sw.addEventListener("click", async () => {
+            const on = !sw.hasAttribute("is-active");
+            sw.toggleAttribute("is-active", on);
+            try { cfg = await api.setConfig({ [key]: on }); } catch (e) { sw.toggleAttribute("is-active", !on); }
+        });
+        stList.appendChild(item);
     }
 
     const dirEl = view.querySelector(".qe-st-dir");

@@ -35,7 +35,7 @@ const CH = {
     stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "" };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 
@@ -432,8 +432,9 @@ ipcMain.handle(CH.stickerSend, async (event, peer, file, hint) => {
             picElement: {
                 fileName, fileSize: String(buf.length), fileSubId: "", fileUuid: "", md5HexStr: md5,
                 original: true, picWidth: size.w, picHeight: size.h,
-                picSubType: 1, picType: ext === "gif" ? 2000 : 1001,
-                sourcePath: dst, summary: "[动画表情]", thumbFileSize: 0,
+                // picSubType 1（表情）内核会报 rich media transfer failed；按普通图片发，和 BetterQQNT 的本地表情一致
+                picSubType: 0, picType: ext === "gif" ? 2000 : 1001,
+                sourcePath: dst, summary: "", thumbFileSize: 0,
             },
         };
         const res = await invokeNT(wcId, "nodeIKernelMsgService/sendMsg", [{

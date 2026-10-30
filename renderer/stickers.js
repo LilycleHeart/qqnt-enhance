@@ -17,6 +17,9 @@ const STAR_BIG = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentC
 const LABEL = "本地表情";
 const FAV = "\u0000fav";
 const TAB_KEY = "qq-enhance-sticker-tab";
+const ORDER_KEY = "qq-enhance-sticker-order";
+// 表情面板里 QQ 自带的三个按钮，设置页可以分别隐藏
+export const NATIVE_TABS = [["showEmojiSearch", "搜索表情", "search"], ["showEmojiDefault", "默认表情", "default"], ["showEmojiFav", "我的收藏", "fav"]];
 const ACTIVE_CLS = "tabs-container-item-active";
 
 const CSS = `
@@ -29,14 +32,15 @@ const CSS = `
 #qe-sticker-view.is-open { display: flex; }
 #qe-sticker-view .qe-sp-grid {
   flex: 1; overflow-y: auto; padding: 4px 8px 8px; display: grid; align-content: start;
-  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); grid-auto-rows: 68px; gap: 4px;
 }
 #qe-sticker-view .qe-sp-cell {
-  position: relative; aspect-ratio: 1; border-radius: 8px; cursor: pointer;
+  position: relative; height: 68px; min-width: 0; padding: 6px; box-sizing: border-box; border-radius: 8px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 #qe-sticker-view .qe-sp-cell:hover { background: var(--overlay_hover, rgba(127,127,127,.14)); }
-#qe-sticker-view .qe-sp-cell img { max-width: 88%; max-height: 88%; object-fit: contain; pointer-events: none; }
+/* 格子定死 68px、图片铺满格子再 contain：大图不会撑开格子叠到一起 */
+#qe-sticker-view .qe-sp-cell img { display: block !important; width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important; object-fit: contain !important; pointer-events: none; }
 #qe-sticker-view .qe-sp-star {
   position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 6px;
   display: none; align-items: center; justify-content: center;
@@ -74,6 +78,19 @@ body.qe-st-active .expression-panel .sticker-panel > :first-child,
 body.qe-st-active .expression-panel .sticker-panel__pages,
 body.qe-st-active .expression-panel .sticker-panel__divide,
 body.qe-st-active .expression-panel .sticker-panel__bar { visibility: hidden !important; }
+body[data-qe-hide-search] .expression-panel .tabs-container-item[aria-label="搜索表情"],
+body[data-qe-hide-default] .expression-panel .tabs-container-item[aria-label="默认表情"],
+body[data-qe-hide-fav] .expression-panel .tabs-container-item[aria-label="我的收藏"] { display: none !important; }
+/* 切换按钮放在分类栏最前面（分类栏翻页也不动），不在可翻页的那一排里 */
+.expression-panel .sticker-panel__bar > .qe-st-tab {
+  flex: 0 0 auto; width: 36px; height: 36px; margin: 0 4px 0 10px; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; align-self: center;
+}
+.expression-panel .sticker-panel__bar > .qe-st-tab:hover { background: var(--overlay_hover, rgba(127,127,127,.14)); }
+.expression-panel .sticker-panel__bar > .qe-st-tab.tabs-container-item-active { background: var(--overlay_active, rgba(127,127,127,.2)); }
+#qe-sticker-view .qe-sp-tab.is-dragging { opacity: .35; }
+#qe-sticker-view .qe-sp-tab.is-drop-before { box-shadow: inset 2px 0 0 var(--ll-brand, var(--brand_standard, #0099ff)); }
+#qe-sticker-view .qe-sp-tab.is-drop-after { box-shadow: inset -2px 0 0 var(--ll-brand, var(--brand_standard, #0099ff)); }
 .expression-panel .qe-st-tab { color: var(--icon_primary, currentColor); }
 .expression-panel .qe-st-tab svg { width: 24px; height: 24px; display: block; }
 `;
@@ -118,8 +135,29 @@ export function installStickers(api, getConfig, toast) {
         return r.width > 100 && r.height > 100 ? sp : null;
     }
 
+    function loadOrder() {
+        try { return JSON.parse(localStorage.getItem(ORDER_KEY) || "[]"); } catch (e) { return []; }
+    }
+    function sortGroups() {
+        const order = loadOrder();
+        const rank = name => { const i = order.indexOf(name); return i < 0 ? 1e6 : i; };
+        data.groups = data.groups.map((g, i) => [g, i]).sort((a, b) => (rank(a[0].name) - rank(b[0].name)) || (a[1] - b[1])).map(x => x[0]);
+    }
+    function moveGroup(from, to, after) {
+        const names = data.groups.map(g => g.name);
+        if (from === to) return;
+        names.splice(names.indexOf(from), 1);
+        let i = names.indexOf(to);
+        if (after) i++;
+        names.splice(i, 0, from);
+        try { localStorage.setItem(ORDER_KEY, JSON.stringify(names)); } catch (e) {}
+        sortGroups();
+        render();
+    }
+
     async function reload() {
         try { data = await api.stickerList(); } catch (e) { data = { groups: [], favs: [], root: "" }; }
+        sortGroups();
         favSet = new Set(data.favs || []);
         if (tab !== FAV && !data.groups.some(g => g.name === tab)) tab = FAV;
         if (active) render();
@@ -157,17 +195,69 @@ export function installStickers(api, getConfig, toast) {
             if (e.target.closest(".qe-sp-star")) { toggleFav(cell.dataset.path); return; }
             send(cell, !(e.ctrlKey || e.shiftKey));
         });
+        // 拖动文件夹按钮调整分组顺序（收藏固定在最前，不参与）
+        let dragName = null;
+        const clearMarks = () => tabsEl.querySelectorAll(".is-drop-before, .is-drop-after").forEach(n => n.classList.remove("is-drop-before", "is-drop-after"));
+        const dropTarget = e => {
+            const b = e.target.closest && e.target.closest(".qe-sp-tabs .qe-sp-tab");
+            if (!b || b.dataset.tab === FAV) return null;
+            const r = b.getBoundingClientRect();
+            return { b, after: e.clientX > r.left + r.width / 2 };
+        };
+        tabsEl.addEventListener("dragstart", e => {
+            const b = e.target.closest(".qe-sp-tab");
+            if (!b || b.dataset.tab === FAV) { e.preventDefault(); return; }
+            dragName = b.dataset.tab;
+            b.classList.add("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", dragName);
+        });
+        tabsEl.addEventListener("dragover", e => {
+            if (!dragName) return;
+            e.preventDefault();
+            e.stopPropagation();
+            clearMarks();
+            const d = dropTarget(e);
+            if (d && d.b.dataset.tab !== dragName) d.b.classList.add(d.after ? "is-drop-after" : "is-drop-before");
+            // 拖到两头时自动横向滚动
+            const r = tabsEl.getBoundingClientRect();
+            if (e.clientX < r.left + 24) tabsEl.scrollLeft -= 8;
+            else if (e.clientX > r.right - 24) tabsEl.scrollLeft += 8;
+        });
+        tabsEl.addEventListener("drop", e => {
+            if (!dragName) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const d = dropTarget(e);
+            const from = dragName;
+            dragName = null;
+            clearMarks();
+            if (d) moveGroup(from, d.b.dataset.tab, d.after);
+        });
+        tabsEl.addEventListener("dragend", () => {
+            dragName = null;
+            clearMarks();
+            tabsEl.querySelectorAll(".is-dragging").forEach(n => n.classList.remove("is-dragging"));
+        });
+
         view.addEventListener("contextmenu", e => {
             e.preventDefault();
             e.stopPropagation();
             const cell = e.target.closest(".qe-sp-cell");
             if (cell) toggleFav(cell.dataset.path);
         });
-        view.addEventListener("wheel", e => {
-            if (!e.target.closest(".qe-sp-bar")) return;
-            tabsEl.scrollLeft += e.deltaY;
-            e.preventDefault();
-        }, { passive: false });
+        // QQ 的表情面板一看到滚动/滚轮就收起（它在 document 上监听）。
+        // 本地表情页里的滚动在 window 捕获阶段就截住，不让 QQ 看到；底栏的滚轮在这里顺手换成横向滚动。
+        const guard = e => {
+            if (!view || !(e.target instanceof Node) || !view.contains(e.target)) return;
+            if (e.type === "wheel" && e.target.closest && e.target.closest(".qe-sp-bar")) {
+                tabsEl.scrollLeft += e.deltaY || e.deltaX;
+                e.preventDefault();
+            }
+            e.stopPropagation();
+        };
+        addEventListener("scroll", guard, true);
+        addEventListener("wheel", guard, { capture: true, passive: false });
     }
 
     async function toggleFav(p) {
@@ -210,6 +300,8 @@ export function installStickers(api, getConfig, toast) {
             b.title = it.name;
             if (it.id === FAV) b.innerHTML = STAR_BIG;
             else {
+                b.draggable = true;
+                b.title = it.name + "（拖动可调整顺序）";
                 const img = document.createElement("img");
                 img.loading = "lazy";
                 img.draggable = false;
@@ -286,7 +378,7 @@ export function installStickers(api, getConfig, toast) {
     function markTab(on) {
         const tc = document.querySelector(".expression-panel .tabs-container");
         if (!tc) return;
-        const mine = tc.querySelector(".qe-st-tab");
+        const mine = document.querySelector(".expression-panel .qe-st-tab");
         if (on) {
             tc.querySelectorAll("." + ACTIVE_CLS).forEach(n => { if (n !== mine) { n.classList.remove(ACTIVE_CLS); n.dataset.qeWasActive = "1"; } });
             if (mine) { mine.classList.add(ACTIVE_CLS); mine.setAttribute("aria-pressed", "true"); }
@@ -329,14 +421,24 @@ export function installStickers(api, getConfig, toast) {
     document.addEventListener("keydown", e => { if (e.key === "Escape" && active) { lastOurs = true; deactivate(); } }, true);
     addEventListener("hashchange", () => { if (active) deactivate(); });
 
+    function applyNativeTabs() {
+        const cfg = getConfig();
+        for (const [key, , id] of NATIVE_TABS) {
+            const attr = "data-qe-hide-" + id;
+            const hide = cfg[key] === false;
+            if (document.body.hasAttribute(attr) !== hide) document.body.toggleAttribute(attr, hide);
+        }
+    }
+
     function ensureTab() {
-        const tc = document.querySelector(".expression-panel .tabs-container");
+        applyNativeTabs();
+        const bar = document.querySelector(".expression-panel .sticker-panel__bar");
+        const tc = bar && bar.querySelector(".tabs-container");
         const on = !!getConfig().stickers;
         const old = document.querySelectorAll(".qe-st-tab");
         if (!on || !tc) { old.forEach(n => n.remove()); if (!on && active) deactivate(); return; }
-        const anchor = tc.querySelector('.tabs-container-item[aria-label="我的收藏"]');
-        if (old.length === 1 && tc.contains(old[0]) && anchor && anchor.nextElementSibling !== old[0]) anchor.after(old[0]);   // Vue 重排后会把它挤到最后
-        if (!(old.length === 1 && tc.contains(old[0]))) {
+        if (old.length === 1 && bar.firstElementChild !== old[0]) bar.prepend(old[0]);   // Vue 重排后可能被挤到后面
+        if (!(old.length === 1 && bar.contains(old[0]))) {
             old.forEach(n => n.remove());
             const item = document.createElement("div");
             item.className = "tabs-container-item qe-st-tab";
@@ -346,8 +448,10 @@ export function installStickers(api, getConfig, toast) {
             item.title = LABEL;
             item.tabIndex = -1;
             item.innerHTML = ICON;
-            const at = anchor || tc.children[Math.min(2, tc.children.length - 1)];
-            if (at) at.after(item); else tc.appendChild(item);
+            // 带上 QQ 分类按钮的 scoped 属性（data-v-xxx），图标颜色等样式和原生的一致
+            const sib = tc.querySelector(".tabs-container-item");
+            if (sib) for (const a of sib.attributes) if (a.name.startsWith("data-v-")) item.setAttribute(a.name, "");
+            bar.prepend(item);
         }
         if (active) markTab(true);                      // QQ 重渲染时会把它自己那项重新点亮
         // 面板刚打开：上次停在本地表情页就切回来
