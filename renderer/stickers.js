@@ -18,6 +18,7 @@ const LABEL = "本地表情";
 const FAV = "\u0000fav";
 const TAB_KEY = "qq-enhance-sticker-tab";
 const ORDER_KEY = "qq-enhance-sticker-order";
+const LAST_KEY = "qq-enhance-sticker-last";   // 关面板时是否停在本地表情页（重启/刷新后也记得）
 // 表情面板里 QQ 自带的三个按钮，设置页可以分别隐藏
 export const NATIVE_TABS = [["showEmojiSearch", "搜索表情", "search"], ["showEmojiDefault", "默认表情", "default"], ["showEmojiFav", "我的收藏", "fav"]];
 const ACTIVE_CLS = "tabs-container-item-active";
@@ -105,8 +106,11 @@ export function installStickers(api, getConfig, toast) {
     let tab = localStorage.getItem(TAB_KEY) || FAV;
     let view = null, grid = null, tabsEl = null;
     let active = false;          // 本地表情页是否打开
-    let lastOurs = false;        // 上次关面板时停在本地表情页：下次打开直接回到这里
+    // 上次关面板时停在本地表情页：下次打开直接回到这里。存进 localStorage，刷新/重启也记得
+    let lastOursVal = localStorage.getItem(LAST_KEY) === "1";
+    const setLast = v => { lastOursVal = !!v; try { localStorage.setItem(LAST_KEY, v ? "1" : "0"); } catch (e) {} };
     let panelWasOpen = false;
+    let recheck = 0, recheckLeft = 0;
     let raf = 0;
 
     const style = document.createElement("style");
@@ -183,7 +187,7 @@ export function installStickers(api, getConfig, toast) {
             e.stopPropagation();
             const act = e.target.closest("[data-act]");
             if (act) {
-                if (act.dataset.act === "back") { lastOurs = false; deactivate(); }
+                if (act.dataset.act === "back") { setLast(false); deactivate(); }
                 else if (act.dataset.act === "open") api.stickerOpenDir();
                 else reload().then(() => toast("已刷新"));
                 return;
@@ -271,7 +275,7 @@ export function installStickers(api, getConfig, toast) {
     }
 
     function closePanel() {
-        lastOurs = true;
+        setLast(true);
         const btn = document.querySelector('.chat-func-bar .icon-item[aria-label="表情"]');
         if (btn) btn.click();
         deactivate();
@@ -371,7 +375,7 @@ export function installStickers(api, getConfig, toast) {
     function follow() {
         raf = 0;
         if (!active) return;
-        if (!place()) { lastOurs = true; deactivate(); return; }
+        if (!place()) { setLast(true); deactivate(); return; }
         raf = requestAnimationFrame(follow);
     }
 
@@ -416,10 +420,15 @@ export function installStickers(api, getConfig, toast) {
             if (!active) activate();
             return;
         }
-        if (active) { lastOurs = false; deactivate(); }
+        if (active) { setLast(false); deactivate(); }
     }, true);
-    document.addEventListener("keydown", e => { if (e.key === "Escape" && active) { lastOurs = true; deactivate(); } }, true);
-    addEventListener("hashchange", () => { if (active) deactivate(); });
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && active) { setLast(true); deactivate(); } }, true);
+    addEventListener("hashchange", () => { if (active) { setLast(true); deactivate(); } });
+    // 点输入框上的「表情」按钮：面板可能只是显示/隐藏，不触发 DOM 增删，主动看几次
+    document.addEventListener("click", e => {
+        if (!(e.target.closest && e.target.closest('.chat-func-bar .icon-item[aria-label="表情"]'))) return;
+        [60, 200, 400].forEach(ms => setTimeout(ensureTab, ms));
+    }, true);
 
     function applyNativeTabs() {
         const cfg = getConfig();
@@ -435,6 +444,15 @@ export function installStickers(api, getConfig, toast) {
         const bar = document.querySelector(".expression-panel .sticker-panel__bar");
         const tc = bar && bar.querySelector(".tabs-container");
         const on = !!getConfig().stickers;
+        // 面板开/关要在任何提前 return 之前记下：面板关掉时底栏也没了，
+        // 以前会直接 return，panelWasOpen 一直停在 true，下次打开就认不出“刚打开”
+        const open = !!(on && tc && stickerPanel());
+        const justOpened = open && !panelWasOpen;
+        panelWasOpen = open;
+        // 底栏出来了但面板还在展开动画里（尺寸不够）：过一会再看一次
+        if (on && tc && !open) {
+            if (!recheck) { if (recheckLeft <= 0) recheckLeft = 10; recheck = setTimeout(() => { recheck = 0; recheckLeft--; if (recheckLeft > 0) ensureTab(); }, 60); }
+        } else recheckLeft = 0;
         const old = document.querySelectorAll(".qe-st-tab");
         if (!on || !tc) { old.forEach(n => n.remove()); if (!on && active) deactivate(); return; }
         if (old.length === 1 && bar.firstElementChild !== old[0]) bar.prepend(old[0]);   // Vue 重排后可能被挤到后面
@@ -455,9 +473,7 @@ export function installStickers(api, getConfig, toast) {
         }
         if (active) markTab(true);                      // QQ 重渲染时会把它自己那项重新点亮
         // 面板刚打开：上次停在本地表情页就切回来
-        const open = !!stickerPanel();
-        if (open && !panelWasOpen && lastOurs && !active) activate();
-        panelWasOpen = open;
+        if (justOpened && lastOursVal && !active) activate();
     }
 
     return { ensure: ensureTab, reload, hide: deactivate };
