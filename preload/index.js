@@ -12,6 +12,11 @@ const api = {
     stats: () => ipcRenderer.invoke(P + "stats"),
     clearSaved: () => ipcRenderer.invoke(P + "clearSaved"),
     repeat: msg => ipcRenderer.invoke(P + "repeat", msg),
+    stickerList: () => ipcRenderer.invoke(P + "stickerList"),
+    stickerFav: (file, on) => ipcRenderer.invoke(P + "stickerFav", file, on),
+    stickerSend: (peer, file, hint) => ipcRenderer.invoke(P + "stickerSend", peer, file, hint),
+    stickerOpenDir: () => ipcRenderer.invoke(P + "stickerOpenDir"),
+    stickerPickDir: () => ipcRenderer.invoke(P + "stickerPickDir"),
 };
 
 const exists = contextBridge.executeInMainWorld({ func: key => key in globalThis, args: ["qq_enhance"] });

@@ -3,10 +3,14 @@
 //   2. 记住浏览位置：切回会话时停在上次看到的地方（Telegram 的做法）
 //   3. 右键菜单「复读」：把这条消息原样再发一次
 //   4. 引用时不带 @：点「引用」后删掉 QQ 自动插入的 @
-//   5. 设置页：每项单独开关
+//   5. 本地表情包：表情文件夹按子文件夹分组，另有一个收藏分组（见 stickers.js）
+//   6. 设置页：每项单独开关
 // 消息数据从 .message 元素上的 __VUE__[0].props.msgRecord 读（QQ 9.9.36 实测）。
+import { installStickers } from "./stickers.js";
+
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true };
+let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "" };
+let stickers = null;
 
 function recordOf(el) {
     try {
@@ -303,15 +307,16 @@ function start() {
     (document.head || document.documentElement).appendChild(style);
 
     api.getConfig().then(cfg => { if (cfg) config = cfg; }).catch(() => {});
-    api.onConfigChanged(cfg => { if (cfg) config = cfg; reloadRecalled(); });
+    api.onConfigChanged(cfg => { if (cfg) config = cfg; reloadRecalled(); if (stickers) { stickers.ensure(); stickers.reload(); } });
     reloadRecalled();
     api.onRecalled((id, nick) => { recalled.set(String(id), nick || "对方"); markRecalled(); });
+    if (location.hash.indexOf("#/setting") !== 0) stickers = installStickers(api, () => config, toast);
 
     // DOM 变动后 150ms 跑一次（滚动时合并成一次，不每帧跑）
     let timer = 0;
     new MutationObserver(() => {
         if (timer) return;
-        timer = setTimeout(() => { timer = 0; markRecalled(); checkPeer(); }, 150);
+        timer = setTimeout(() => { timer = 0; markRecalled(); checkPeer(); if (stickers) stickers.ensure(); }, 150);
     }).observe(document.body, { childList: true, subtree: true });
 }
 
@@ -325,6 +330,7 @@ const FEATURES = [
     ["chatPos", "记住浏览位置", "切回会话时停在上次看到的地方，而不是跳到最底下。"],
     ["repeat", "右键复读", "消息右键菜单里加一项「复读」，把这条消息原样再发一次。"],
     ["quoteNoAt", "引用时不带 @", "点「引用」时，不自动在输入框里插入 @对方。"],
+    ["stickers", "本地表情包", "表情面板底部多一个「本地表情」分类，发送表情文件夹里的图片。每个子文件夹是一个分组，另有收藏分组。"],
 ];
 
 function fmtBytes(n) {
@@ -341,6 +347,23 @@ export const onSettingWindowCreated = async view => {
 <setting-section data-title="功能">
   <setting-panel>
     <setting-list data-direction="column" class="qe-features"></setting-list>
+  </setting-panel>
+</setting-section>
+<setting-section data-title="本地表情包">
+  <setting-panel>
+    <setting-list data-direction="column">
+      <setting-item>
+        <div>
+          <setting-text>表情文件夹</setting-text>
+          <setting-text data-type="secondary" class="qe-st-dir">读取中…</setting-text>
+        </div>
+        <div style="display:flex;gap:8px">
+          <setting-button data-type="secondary" class="qe-st-open">打开</setting-button>
+          <setting-button data-type="secondary" class="qe-st-pick">更换</setting-button>
+          <setting-button data-type="secondary" class="qe-st-reset" style="display:none">恢复默认</setting-button>
+        </div>
+      </setting-item>
+    </setting-list>
   </setting-panel>
 </setting-section>
 <setting-section data-title="防撤回数据">
@@ -373,6 +396,24 @@ export const onSettingWindowCreated = async view => {
         });
         list.appendChild(item);
     }
+
+    const dirEl = view.querySelector(".qe-st-dir");
+    const resetBtn = view.querySelector(".qe-st-reset");
+    const refreshDir = () => api.stickerList().then(s => {
+        const n = s.groups.reduce((a, g) => a + g.files.length, 0);
+        dirEl.textContent = s.root + "（" + s.groups.length + " 个分组，" + n + " 张，收藏 " + s.favs.length + " 张）";
+        resetBtn.style.display = s.isDefault ? "none" : "";
+    }).catch(() => { dirEl.textContent = "读取失败"; });
+    refreshDir();
+    view.querySelector(".qe-st-open").addEventListener("click", () => api.stickerOpenDir());
+    view.querySelector(".qe-st-pick").addEventListener("click", async () => {
+        const c = await api.stickerPickDir();
+        if (c) { cfg = c; refreshDir(); }
+    });
+    resetBtn.addEventListener("click", async () => {
+        cfg = await api.setConfig({ stickerDir: "" });
+        refreshDir();
+    });
 
     const statsEl = view.querySelector(".qe-stats");
     const refreshStats = () => api.stats().then(s => {

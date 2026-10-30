@@ -1,0 +1,326 @@
+// QQ 增强 · 本地表情包（并进 QQ 自带的表情面板）
+//   - 表情面板底部分类栏里，「我的收藏」后面多一个「本地表情」
+//   - 切过去后，面板内容区换成本地表情：顶部是分组（收藏 + 表情文件夹里的每个子文件夹）
+//   - 点图片直接发送并收起面板；Ctrl/Shift + 点击发送后不收起；右键或右上角星标切换收藏
+//   - 图片用 QQ 自己的 appimg:// 协议读本地文件
+// 表情面板是 Vue 管理的，往里塞的节点会被重渲染清掉：
+//   分类按钮由主循环反复调 ensure() 补回；内容层不放进面板，而是挂在 body 上、按面板位置盖上去。
+
+const ICON = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M22 16V4c0-1.1-.9-2-2-2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2zm-11-4 2.03 2.71L16 11l4 5H8l3-4zM2 6v14c0 1.1.9 2 2 2h14v-2H4V6H2z"/></svg>';
+const STAR = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>';
+const ICON_REFRESH = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+
+const LABEL = "本地表情";
+const FAV = "\u0000fav";
+const TAB_KEY = "qq-enhance-sticker-tab";
+const ACTIVE_CLS = "tabs-container-item-active";
+
+const CSS = `
+#qe-sticker-view {
+  position: fixed; z-index: 4500; display: none; flex-direction: column; box-sizing: border-box;
+  border-radius: 12px 12px 0 0; overflow: hidden;
+  background: transparent;
+  color: var(--ll-on-glass, var(--text_primary, #222)); font-size: 13px;
+}
+#qe-sticker-view.is-open { display: flex; }
+#qe-sticker-view .qe-sp-grid {
+  flex: 1; overflow-y: auto; padding: 4px 8px 8px; display: grid; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 4px;
+}
+#qe-sticker-view .qe-sp-cell {
+  position: relative; aspect-ratio: 1; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+#qe-sticker-view .qe-sp-cell:hover { background: var(--overlay_hover, rgba(127,127,127,.14)); }
+#qe-sticker-view .qe-sp-cell img { max-width: 88%; max-height: 88%; object-fit: contain; pointer-events: none; }
+#qe-sticker-view .qe-sp-star {
+  position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 6px;
+  display: none; align-items: center; justify-content: center;
+  color: var(--ll-on-glass-2, var(--text_secondary, #888)); background: rgba(127,127,127,.2);
+}
+#qe-sticker-view .qe-sp-cell:hover .qe-sp-star { display: flex; }
+#qe-sticker-view .qe-sp-cell.is-fav .qe-sp-star { display: flex; color: #f5b400; background: transparent; }
+#qe-sticker-view .qe-sp-star:hover { background: rgba(127,127,127,.32); }
+#qe-sticker-view .qe-sp-bar { display: flex; align-items: center; gap: 2px; padding: 8px 8px 4px; flex: 0 0 auto; }
+#qe-sticker-view .qe-sp-tabs { flex: 1; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+#qe-sticker-view .qe-sp-tabs::-webkit-scrollbar { display: none; }
+#qe-sticker-view .qe-sp-tab, #qe-sticker-view .qe-sp-act {
+  flex: 0 0 auto; height: 26px; padding: 0 10px; border: none; border-radius: 8px; cursor: pointer;
+  display: flex; align-items: center; gap: 4px; background: transparent; color: inherit; font: inherit; white-space: nowrap;
+}
+#qe-sticker-view .qe-sp-act { padding: 0 6px; color: var(--ll-on-glass-2, var(--text_secondary, #888)); }
+#qe-sticker-view .qe-sp-tab:hover, #qe-sticker-view .qe-sp-act:hover { background: var(--overlay_hover, rgba(127,127,127,.14)); }
+#qe-sticker-view .qe-sp-tab.is-active { background: rgba(var(--ll-brand-rgb, 0,153,255), .2); color: var(--ll-brand, var(--brand_standard, #0099ff)); }
+#qe-sticker-view .qe-sp-empty {
+  grid-column: 1 / -1; padding: 40px 16px; text-align: center; line-height: 1.7;
+  color: var(--ll-on-glass-2, var(--text_secondary, #888));
+}
+#qe-sticker-view .qe-sp-empty b { color: var(--ll-on-glass, var(--text_primary, #222)); font-weight: 600; }
+/* 本地表情页打开时，把 QQ 自己的内容藏起来（面板底色和分类栏留着） */
+body.qe-st-active .expression-panel .sticker-panel > :first-child,
+body.qe-st-active .expression-panel .sticker-panel__pages { visibility: hidden !important; }
+.expression-panel .qe-st-tab { color: var(--icon_primary, currentColor); }
+.expression-panel .qe-st-tab svg { width: 24px; height: 24px; display: block; }
+`;
+
+export function appimg(p) {
+    return "appimg://" + encodeURI(String(p).replace(/\\/g, "/")).replace(/#/g, "%23").replace(/\?/g, "%3F");
+}
+
+export function installStickers(api, getConfig, toast) {
+    let data = { groups: [], favs: [], root: "" };
+    let favSet = new Set();
+    let tab = localStorage.getItem(TAB_KEY) || FAV;
+    let view = null, grid = null, tabsEl = null;
+    let active = false;          // 本地表情页是否打开
+    let lastOurs = false;        // 上次关面板时停在本地表情页：下次打开直接回到这里
+    let panelWasOpen = false;
+    let raf = 0;
+
+    const style = document.createElement("style");
+    style.id = "qq-enhance-sticker-style";
+    style.textContent = CSS;
+    (document.head || document.documentElement).appendChild(style);
+
+    function peerNow() {
+        try {
+            const area = document.querySelector(".chat-msg-area");
+            for (const inst of (area && area.__VUE__) || []) {
+                const p = inst && inst.props && inst.props.peer;
+                if (p && p.peerUid) return { chatType: p.chatType, peerUid: String(p.peerUid), guildId: p.guildId ? String(p.guildId) : "" };
+            }
+            const m = document.querySelector(".chat-msg-area .message");
+            const rec = m && m.__VUE__ && m.__VUE__[0] && m.__VUE__[0].props && m.__VUE__[0].props.msgRecord;
+            if (rec && rec.peerUid) return { chatType: rec.chatType, peerUid: String(rec.peerUid), guildId: rec.guildId ? String(rec.guildId) : "" };
+        } catch (e) {}
+        return null;
+    }
+
+    function stickerPanel() {
+        const sp = document.querySelector(".chat-input-area .expression-panel .sticker-panel") || document.querySelector(".expression-panel .sticker-panel");
+        if (!sp) return null;
+        const r = sp.getBoundingClientRect();
+        return r.width > 100 && r.height > 100 ? sp : null;
+    }
+
+    async function reload() {
+        try { data = await api.stickerList(); } catch (e) { data = { groups: [], favs: [], root: "" }; }
+        favSet = new Set(data.favs || []);
+        if (tab !== FAV && !data.groups.some(g => g.name === tab)) tab = FAV;
+        if (active) render();
+    }
+
+    function build() {
+        if (view) return;
+        view = document.createElement("div");
+        view.id = "qe-sticker-view";
+        view.innerHTML = '<div class="qe-sp-bar"><div class="qe-sp-tabs"></div>' +
+            '<button type="button" class="qe-sp-act" data-act="refresh" title="刷新">' + ICON_REFRESH + '</button>' +
+            '<button type="button" class="qe-sp-act" data-act="open" title="打开表情文件夹">' + ICON_FOLDER + '</button></div>' +
+            '<div class="qe-sp-grid"></div>';
+        grid = view.querySelector(".qe-sp-grid");
+        tabsEl = view.querySelector(".qe-sp-tabs");
+        document.body.appendChild(view);
+
+        // 面板外点击会让 QQ 收起表情面板；内容层不在面板 DOM 里，得挡住 mousedown，免得 QQ 以为点到了外面
+        view.addEventListener("mousedown", e => e.stopPropagation());
+        view.addEventListener("click", e => {
+            e.stopPropagation();
+            const act = e.target.closest(".qe-sp-act");
+            if (act) {
+                if (act.dataset.act === "open") api.stickerOpenDir();
+                else reload().then(() => toast("已刷新"));
+                return;
+            }
+            const t = e.target.closest(".qe-sp-tab");
+            if (t) { tab = t.dataset.tab; localStorage.setItem(TAB_KEY, tab); render(); grid.scrollTop = 0; return; }
+            const cell = e.target.closest(".qe-sp-cell");
+            if (!cell) return;
+            if (e.target.closest(".qe-sp-star")) { toggleFav(cell.dataset.path); return; }
+            send(cell, !(e.ctrlKey || e.shiftKey));
+        });
+        view.addEventListener("contextmenu", e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const cell = e.target.closest(".qe-sp-cell");
+            if (cell) toggleFav(cell.dataset.path);
+        });
+        view.addEventListener("wheel", e => {
+            if (!e.target.closest(".qe-sp-tabs")) return;
+            tabsEl.scrollLeft += e.deltaY;
+            e.preventDefault();
+        }, { passive: false });
+    }
+
+    async function toggleFav(p) {
+        const on = !favSet.has(p);
+        try {
+            data.favs = await api.stickerFav(p, on);
+            favSet = new Set(data.favs);
+            toast(on ? "已收藏" : "已取消收藏");
+        } catch (e) { toast("收藏失败"); }
+        render();
+    }
+
+    function closePanel() {
+        lastOurs = true;
+        const btn = document.querySelector('.chat-func-bar .icon-item[aria-label="表情"]');
+        if (btn) btn.click();
+        deactivate();
+    }
+
+    function send(cell, close) {
+        const peer = peerNow();
+        if (!peer) { toast("没有找到当前会话"); return; }
+        const img = cell.querySelector("img");
+        const hint = img ? { w: img.naturalWidth, h: img.naturalHeight } : null;
+        if (close) closePanel();
+        api.stickerSend(peer, cell.dataset.path, hint).then(res => {
+            if (res && (res.error || (res.result !== undefined && res.result !== 0))) toast("发送失败：" + (res.error || res.errMsg || res.result));
+        }).catch(() => toast("发送失败"));
+    }
+
+    function render() {
+        if (!view) return;
+        tabsEl.innerHTML = "";
+        const tabs = [[FAV, "收藏"]].concat(data.groups.map(g => [g.name, g.name]));
+        for (const [id, name] of tabs) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "qe-sp-tab" + (id === tab ? " is-active" : "");
+            b.dataset.tab = id;
+            if (id === FAV) b.innerHTML = STAR;
+            b.appendChild(document.createTextNode(name));
+            tabsEl.appendChild(b);
+        }
+        const files = tab === FAV ? data.favs : ((data.groups.find(g => g.name === tab) || {}).files || []);
+        grid.innerHTML = "";
+        if (!files.length) {
+            const empty = document.createElement("div");
+            empty.className = "qe-sp-empty";
+            if (tab === FAV) empty.innerHTML = data.groups.length
+                ? "还没有收藏<br>在表情上点右上角的星标，或右键它，就会收进这里"
+                : "表情文件夹是空的<br>点右上角<b>文件夹</b>按钮，把图片放进去<br>每个子文件夹会成为一个分组";
+            else empty.textContent = "这个分组里没有图片";
+            grid.appendChild(empty);
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        for (const p of files) {
+            const cell = document.createElement("div");
+            cell.className = "qe-sp-cell" + (favSet.has(p) ? " is-fav" : "");
+            cell.dataset.path = p;
+            cell.title = p.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+            const img = document.createElement("img");
+            img.loading = "lazy";
+            img.decoding = "async";
+            img.draggable = false;
+            img.src = appimg(p);
+            const star = document.createElement("div");
+            star.className = "qe-sp-star";
+            star.title = favSet.has(p) ? "取消收藏" : "收藏";
+            star.innerHTML = STAR;
+            cell.appendChild(img);
+            cell.appendChild(star);
+            frag.appendChild(cell);
+        }
+        grid.appendChild(frag);
+    }
+
+    // 盖住面板的内容区（分类栏上面那一块），分类栏留给用户切回 QQ 自带的表情
+    function place() {
+        const sp = stickerPanel();
+        if (!sp) return false;
+        const r = sp.getBoundingClientRect();
+        const cut = sp.querySelector(".sticker-panel__divide") || sp.querySelector(".sticker-panel__bar");
+        const bottom = cut ? cut.getBoundingClientRect().top : r.bottom - 48;
+        view.style.left = Math.round(r.left) + "px";
+        view.style.top = Math.round(r.top) + "px";
+        view.style.width = Math.round(r.width) + "px";
+        view.style.height = Math.max(60, Math.round(bottom - r.top)) + "px";
+        return true;
+    }
+
+    function follow() {
+        raf = 0;
+        if (!active) return;
+        if (!place()) { lastOurs = true; deactivate(); return; }
+        raf = requestAnimationFrame(follow);
+    }
+
+    function markTab(on) {
+        const tc = document.querySelector(".expression-panel .tabs-container");
+        if (!tc) return;
+        const mine = tc.querySelector(".qe-st-tab");
+        if (on) {
+            tc.querySelectorAll("." + ACTIVE_CLS).forEach(n => { if (n !== mine) { n.classList.remove(ACTIVE_CLS); n.dataset.qeWasActive = "1"; } });
+            if (mine) { mine.classList.add(ACTIVE_CLS); mine.setAttribute("aria-pressed", "true"); }
+        } else {
+            if (mine) { mine.classList.remove(ACTIVE_CLS); mine.setAttribute("aria-pressed", "false"); }
+            tc.querySelectorAll("[data-qe-was-active]").forEach(n => { n.classList.add(ACTIVE_CLS); delete n.dataset.qeWasActive; });
+        }
+    }
+
+    function activate() {
+        build();
+        active = true;
+        document.body.classList.add("qe-st-active");
+        markTab(true);
+        if (place()) view.classList.add("is-open");
+        render();
+        reload();                                       // 每次切过来都重扫一遍，刚放进去的图马上能看到
+        if (!raf) raf = requestAnimationFrame(follow);
+    }
+
+    function deactivate() {
+        active = false;
+        document.body.classList.remove("qe-st-active");
+        if (view) view.classList.remove("is-open");
+        markTab(false);
+    }
+
+    // 点 QQ 自带的分类：回到 QQ 的内容
+    document.addEventListener("click", e => {
+        const item = e.target.closest && e.target.closest(".expression-panel .tabs-container-item");
+        if (!item) return;
+        if (item.classList.contains("qe-st-tab")) {
+            e.stopPropagation();
+            e.preventDefault();
+            if (!active) activate();
+            return;
+        }
+        if (active) { lastOurs = false; deactivate(); }
+    }, true);
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && active) { lastOurs = true; deactivate(); } }, true);
+    addEventListener("hashchange", () => { if (active) deactivate(); });
+
+    function ensureTab() {
+        const tc = document.querySelector(".expression-panel .tabs-container");
+        const on = !!getConfig().stickers;
+        const old = document.querySelectorAll(".qe-st-tab");
+        if (!on || !tc) { old.forEach(n => n.remove()); if (!on && active) deactivate(); return; }
+        const anchor = tc.querySelector('.tabs-container-item[aria-label="我的收藏"]');
+        if (old.length === 1 && tc.contains(old[0]) && anchor && anchor.nextElementSibling !== old[0]) anchor.after(old[0]);   // Vue 重排后会把它挤到最后
+        if (!(old.length === 1 && tc.contains(old[0]))) {
+            old.forEach(n => n.remove());
+            const item = document.createElement("div");
+            item.className = "tabs-container-item qe-st-tab";
+            item.setAttribute("role", "button");
+            item.setAttribute("aria-label", LABEL);
+            item.setAttribute("aria-pressed", "false");
+            item.title = LABEL;
+            item.tabIndex = -1;
+            item.innerHTML = ICON;
+            const at = anchor || tc.children[Math.min(2, tc.children.length - 1)];
+            if (at) at.after(item); else tc.appendChild(item);
+        }
+        if (active) markTab(true);                      // QQ 重渲染时会把它自己那项重新点亮
+        // 面板刚打开：上次停在本地表情页就切回来
+        const open = !!stickerPanel();
+        if (open && !panelWasOpen && lastOurs && !active) activate();
+        panelWasOpen = open;
+    }
+
+    return { ensure: ensureTab, reload, hide: deactivate };
+}

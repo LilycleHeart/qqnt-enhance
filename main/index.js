@@ -10,7 +10,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { ipcMain, BrowserWindow } = require("electron");
+const { ipcMain, BrowserWindow, shell, dialog } = require("electron");
 
 const SLUG = "qq-enhance";
 const DATA = path.join(LiteLoader.path.data, SLUG);
@@ -28,9 +28,14 @@ const CH = {
     stats: "LiteLoader.qq_enhance.stats",
     clearSaved: "LiteLoader.qq_enhance.clearSaved",
     repeat: "LiteLoader.qq_enhance.repeat",
+    stickerList: "LiteLoader.qq_enhance.stickerList",
+    stickerFav: "LiteLoader.qq_enhance.stickerFav",
+    stickerSend: "LiteLoader.qq_enhance.stickerSend",
+    stickerOpenDir: "LiteLoader.qq_enhance.stickerOpenDir",
+    stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "" };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 
@@ -70,7 +75,7 @@ function broadcast(channel, ...args) {
 ipcMain.handle(CH.getConfig, () => config);
 ipcMain.handle(CH.setConfig, (_e, patch) => {
     const next = Object.assign({}, config);
-    for (const k of Object.keys(DEFAULTS)) if (patch && typeof patch[k] === "boolean") next[k] = patch[k];
+    for (const k of Object.keys(DEFAULTS)) if (patch && typeof patch[k] === typeof DEFAULTS[k]) next[k] = patch[k];
     config = next;
     try { LiteLoader.api.config.set(SLUG, config); } catch (e) { log("save config failed: " + e.message); }
     broadcast(CH.configChanged, config);
@@ -223,6 +228,14 @@ function hookWindow(window) {
     const send = wc.send;
     wc.send = function (channel, ...args) {
         if (typeof channel === "string" && channel.includes("RM_IPCFROM_")) {
+            // 自己发起的内核调用（invokeNT），回包走的是真窗口：认出来就收下，不转给界面
+            const meta = args[0];
+            if (meta && meta.callbackId && pendingNT.has(meta.callbackId)) {
+                const done = pendingNT.get(meta.callbackId);
+                pendingNT.delete(meta.callbackId);
+                done(args[1]);
+                return;
+            }
             try { if (handle(args)) return; }
             catch (e) { log("handle error: " + (e && e.stack || e)); }
         }
@@ -235,16 +248,19 @@ function hookWindow(window) {
  * {type:"request", callbackId, eventName:"ntApi", peerId} + {cmdName, cmdType:"invoke", payload}。
  * 格式参照 BetterQQNT 的 invokeNTApi 与本机实测（QQ 9.9.36）。
  * 回包不一定走假 sender，超时不算失败。 */
+const pendingNT = new Map();      // callbackId -> resolve
 function invokeNT(webContentsId, cmdName, args) {
     return new Promise(resolve => {
         const callbackId = crypto.randomUUID();
-        const timer = setTimeout(() => resolve({ pending: true }), 5000);
+        const finish = v => { clearTimeout(timer); pendingNT.delete(callbackId); resolve(v); };
+        const timer = setTimeout(() => { pendingNT.delete(callbackId); resolve({ pending: true }); }, 5000);
+        pendingNT.set(callbackId, finish);
         const fakeEvent = {
             sender: {
                 id: webContentsId,
                 isDestroyed: () => false,
                 send: (_channel, meta, result) => {
-                    if (meta && meta.callbackId === callbackId) { clearTimeout(timer); resolve(result); }
+                    if (meta && meta.callbackId === callbackId) finish(result);
                 },
             },
         };
@@ -270,6 +286,166 @@ ipcMain.handle(CH.repeat, async (event, msg) => {
         return res;
     } catch (e) {
         log("repeat failed: " + e.message);
+        return { error: e.message };
+    }
+});
+
+/* ---------- 本地表情包 ----------
+ * 表情文件夹：根目录下的每个子文件夹是一组（子文件夹里再往下的图也算这一组），
+ * 根目录里直接放的图归「未分组」。收藏单独存一份路径表，和文件夹无关。
+ * 发送照 BetterQQNT 的本地表情：问内核要富媒体路径 → 把图拷过去 → sendMsg 一个 picElement。 */
+const DEFAULT_STICKER_DIR = path.join(DATA, "stickers");
+const FAV_FILE = path.join(DATA, "sticker-favs.json");
+const STICKER_CACHE = path.join(DATA, "sticker-cache");
+const IMG_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
+const MAX_PER_GROUP = 2000;
+
+function stickerRoot() {
+    const dir = (config.stickerDir || "").trim();
+    return dir ? path.resolve(dir) : DEFAULT_STICKER_DIR;
+}
+try { fs.mkdirSync(DEFAULT_STICKER_DIR, { recursive: true }); } catch (e) {}
+
+let favs = [];
+try { favs = JSON.parse(fs.readFileSync(FAV_FILE, "utf8")).filter(x => typeof x === "string"); } catch (e) { favs = []; }
+function saveFavs() {
+    try { fs.writeFileSync(FAV_FILE, JSON.stringify(favs)); } catch (e) { log("save favs failed: " + e.message); }
+}
+
+const extOf = p => path.extname(p).slice(1).toLowerCase();
+const byName = (a, b) => a.localeCompare(b, "zh-CN", { numeric: true });
+
+function collectImages(dir, out, depth) {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
+    ents.sort((a, b) => byName(a.name, b.name));
+    for (const e of ents) {
+        if (out.length >= MAX_PER_GROUP) break;
+        const full = path.join(dir, e.name);
+        if (e.isFile() && IMG_EXT.has(extOf(e.name))) out.push(full);
+        else if (e.isDirectory() && depth > 0 && !e.name.startsWith(".")) collectImages(full, out, depth - 1);
+    }
+    return out;
+}
+
+function listStickers() {
+    const root = stickerRoot();
+    const groups = [];
+    let ents = [];
+    try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch (e) {}
+    const loose = ents.filter(e => e.isFile() && IMG_EXT.has(extOf(e.name))).map(e => path.join(root, e.name)).sort(byName);
+    for (const e of ents.filter(e => e.isDirectory() && !e.name.startsWith(".")).sort((a, b) => byName(a.name, b.name))) {
+        const files = collectImages(path.join(root, e.name), [], 4);
+        if (files.length) groups.push({ name: e.name, files });
+    }
+    if (loose.length) groups.push({ name: "未分组", files: loose.slice(0, MAX_PER_GROUP) });
+    const existing = favs.filter(f => fs.existsSync(f));
+    return { root, groups, favs: existing, isDefault: !config.stickerDir };
+}
+
+function insideRoot(p) {
+    try {
+        const root = fs.realpathSync(stickerRoot());
+        const real = fs.realpathSync(p);
+        const rel = path.relative(root, real);
+        return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+    } catch (e) { return false; }
+}
+
+// 读图片头拿宽高（png / gif / jpg / webp / bmp），读不出就用界面传来的
+function imageSize(buf) {
+    try {
+        if (buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+        if (buf.length > 10 && buf.toString("ascii", 0, 3) === "GIF") return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+        if (buf.length > 26 && buf.toString("ascii", 0, 2) === "BM") return { w: buf.readInt32LE(18), h: Math.abs(buf.readInt32LE(22)) };
+        if (buf.length > 30 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") {
+            const kind = buf.toString("ascii", 12, 16);
+            if (kind === "VP8X") return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+            if (kind === "VP8L") { const b = buf.readUInt32LE(21); return { w: 1 + (b & 0x3fff), h: 1 + ((b >> 14) & 0x3fff) }; }
+            if (kind === "VP8 ") return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+        }
+        if (buf[0] === 0xff && buf[1] === 0xd8) {
+            let i = 2;
+            while (i + 9 < buf.length) {
+                if (buf[i] !== 0xff) { i++; continue; }
+                const m = buf[i + 1];
+                if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+                i += 2 + buf.readUInt16BE(i + 2);
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
+ipcMain.handle(CH.stickerList, () => listStickers());
+
+ipcMain.handle(CH.stickerFav, (_e, p, on) => {
+    if (typeof p !== "string") return favs;
+    favs = favs.filter(x => x !== p);
+    if (on && insideRoot(p)) favs.unshift(p);
+    saveFavs();
+    broadcast(CH.configChanged, config);
+    return favs;
+});
+
+ipcMain.handle(CH.stickerOpenDir, () => {
+    const root = stickerRoot();
+    try { fs.mkdirSync(root, { recursive: true }); } catch (e) {}
+    return shell.openPath(root);
+});
+
+ipcMain.handle(CH.stickerPickDir, async event => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, { title: "选择表情包文件夹", defaultPath: stickerRoot(), properties: ["openDirectory", "createDirectory"] });
+    if (res.canceled || !res.filePaths[0]) return null;
+    config = Object.assign({}, config, { stickerDir: res.filePaths[0] });
+    try { LiteLoader.api.config.set(SLUG, config); } catch (e) {}
+    broadcast(CH.configChanged, config);
+    return config;
+});
+
+ipcMain.handle(CH.stickerSend, async (event, peer, file, hint) => {
+    if (!config.stickers) return { error: "本地表情包已关闭" };
+    try {
+        if (!peer || !peer.peerUid || typeof file !== "string") return { error: "没有找到当前会话" };
+        if (!IMG_EXT.has(extOf(file)) || !(insideRoot(file) || favs.includes(file))) return { error: "只能发送表情文件夹里的图片" };
+        const buf = fs.readFileSync(file);
+        const md5 = crypto.createHash("md5").update(buf).digest("hex");
+        const ext = extOf(file) === "jpeg" ? "jpg" : extOf(file);
+        const size = imageSize(buf) || { w: Number(hint && hint.w) || 200, h: Number(hint && hint.h) || 200 };
+        const fileName = md5 + "." + ext;
+
+        const wcId = event.sender.id;
+        let dst = await invokeNT(wcId, "nodeIKernelMsgService/getRichMediaFilePathForGuild", [{
+            path_info: { md5HexStr: md5, fileName, elementType: 2, elementSubType: 0, thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: "" },
+        }, null]);
+        if (typeof dst !== "string" || !dst) {
+            log("sticker: no rich media path (" + JSON.stringify(dst).slice(0, 120) + "), use cache");
+            fs.mkdirSync(STICKER_CACHE, { recursive: true });
+            dst = path.join(STICKER_CACHE, fileName);
+        }
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        if (!fs.existsSync(dst)) fs.copyFileSync(file, dst);
+
+        const pic = {
+            elementType: 2, elementId: "",
+            picElement: {
+                fileName, fileSize: String(buf.length), fileSubId: "", fileUuid: "", md5HexStr: md5,
+                original: true, picWidth: size.w, picHeight: size.h,
+                picSubType: 1, picType: ext === "gif" ? 2000 : 1001,
+                sourcePath: dst, summary: "[动画表情]", thumbFileSize: 0,
+            },
+        };
+        const res = await invokeNT(wcId, "nodeIKernelMsgService/sendMsg", [{
+            msgId: "0",
+            peer: { chatType: peer.chatType, peerUid: String(peer.peerUid), guildId: peer.guildId ? String(peer.guildId) : "" },
+            msgElements: [pic],
+            msgAttributeInfos: new Map(),
+        }, null]);
+        log("sticker " + path.basename(file) + " -> " + JSON.stringify(res).slice(0, 160));
+        return res;
+    } catch (e) {
+        log("sticker failed: " + (e && e.stack || e));
         return { error: e.message };
     }
 });
