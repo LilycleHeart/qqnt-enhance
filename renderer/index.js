@@ -141,6 +141,9 @@ let restoreJob = 0;
 
 function savePos() {
     if (!config.chatPos || restoring || !peer) return;
+    // 界面已经换成别的会话（QQ 切会话时会把新会话滚到底并触发 scroll），
+    // 这时再记就会把「在底部」错记到旧会话头上，把真正的位置冲掉
+    if (currentPeer() !== peer) return;
     const sc = findScroller();
     if (!sc) return;
     if (distanceToBottom(sc) <= BOTTOM_PX) posStore[peer] = { bottom: true, t: Date.now() };
@@ -161,6 +164,13 @@ document.addEventListener("scroll", e => {
 }, { capture: true, passive: true });
 
 function stopRestore() { restoring = false; restoreJob++; }
+// 点会话列表等地方之前，先把还没来得及记的位置立刻记下（滚完 300ms 内就切走也不丢）
+document.addEventListener("mousedown", e => {
+    if (!posSaveTimer || restoring) return;
+    if (e.target && e.target.closest && e.target.closest(".chat-msg-area")) return;
+    clearTimeout(posSaveTimer); posSaveTimer = 0;
+    savePos();
+}, true);
 ["wheel", "mousedown", "keydown", "touchstart"].forEach(ev =>
     document.addEventListener(ev, () => { if (restoring) stopRestore(); }, { capture: true, passive: true }));
 
