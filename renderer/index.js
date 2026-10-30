@@ -110,7 +110,8 @@ function findScroller() {
     const item = area.querySelector(".ml-item");
     for (let n = item && item.parentElement; n && n !== document.body; n = n.parentElement) {
         const oy = getComputedStyle(n).overflowY;
-        if ((oy === "auto" || oy === "scroll") && n.scrollHeight > n.clientHeight + 4) return n;
+        // QQ 的消息列表（.q-scroll-view）用的是 overflow-y: overlay，不认它就一次都记不上
+        if ((oy === "auto" || oy === "scroll" || oy === "overlay") && n.scrollHeight > n.clientHeight + 4) return n;
         if (n === area) break;
     }
     return null;
@@ -172,32 +173,46 @@ document.addEventListener("mousedown", e => {
     savePos();
 }, true);
 ["wheel", "mousedown", "keydown", "touchstart"].forEach(ev =>
-    document.addEventListener(ev, () => { if (restoring) stopRestore(); }, { capture: true, passive: true }));
+    document.addEventListener(ev, e => { if (restoring && e.isTrusted) stopRestore(); }, { capture: true, passive: true }));
 
 function restorePos(target) {
     const job = ++restoreJob;
     restoring = true;
     let tries = 0;
-    const align = (sc, el) => { sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - target.off; };
+    // QQ 的消息列表是虚拟列表：直接改 scrollTop 它不认，要用它自己暴露的方法。
+    // 从一条消息的 Vue 实例往上找：带 scrollToMsg 的是消息列表，带 scrollTo/getScrollTop 的是滚动容器。
+    const apis = () => {
+        const m = document.querySelector(".chat-msg-area .message");
+        let inst = m && m.__VUE__ && m.__VUE__[0];
+        let list = null, view = null;
+        for (let d = 0; inst && d < 8; d++, inst = inst.parent) {
+            const ex = inst.exposed;
+            if (!ex) continue;
+            if (!view && typeof ex.scrollTo === "function" && typeof ex.getScrollTop === "function") view = ex;
+            if (!list && typeof ex.scrollToMsg === "function") list = ex;
+        }
+        return list ? { list, view } : null;
+    };
+    const loaded = list => {
+        const m = list.msgs;
+        const arr = (m && m.value) || m || [];
+        return Array.isArray(arr) && arr.some(x => x && x.msgId === target.id);
+    };
     const step = () => {
         if (job !== restoreJob) return;
         const sc = findScroller();
-        if (!sc) { if (tries++ < 40) return setTimeout(step, 150); return stopRestore(); }
-        const sel = '.ml-item[id="' + CSS.escape(target.id) + '"]';
-        const el = sc.querySelector(sel);
-        if (el) {
-            align(sc, el);
-            setTimeout(() => {                             // 虚拟列表滚动后可能重排一次，再校正
-                if (job !== restoreJob) return;
-                const el2 = sc.querySelector(sel);
-                if (el2) align(sc, el2);
-                restoring = false;
-            }, 120);
+        const a = apis();
+        if (!sc || !a) { if (tries++ < 40) return setTimeout(step, 150); return stopRestore(); }
+        if (loaded(a.list)) {
+            let ok = false;
+            try { ok = a.list.scrollToMsg(target.id); } catch (e) {}
+            Promise.resolve(ok).finally(() => setTimeout(() => { if (job === restoreJob) restoring = false; }, 300));
             return;
         }
         if (tries++ >= 40) return stopRestore();
-        sc.scrollTop -= sc.clientHeight * 1.5;
-        setTimeout(step, 180);
+        // 往上翻一屏，让 QQ 加载更早的消息
+        sc.scrollTop -= sc.clientHeight;
+        setTimeout(step, 350);
     };
     setTimeout(step, 350);
 }
