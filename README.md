@@ -48,22 +48,19 @@
 
 ### 第一步：装好 LiteLoaderQQNT
 
-本插件是标准 [**LiteLoaderQQNT**](https://github.com/LiteLoaderQQNT/LiteLoaderQQNT) 插件，先按官方方式让 QQ 加载 LiteLoader。
+本插件是标准 [**LiteLoaderQQNT**](https://github.com/LiteLoaderQQNT/LiteLoaderQQNT) 插件，需要 QQ 先加载 LiteLoader。
 
-QQ 9.9.x 会校验自身文件，直接改会被拦。用**文件校验补丁**绕过（向作者索取，或见姊妹仓库 `docs/patch/`）：
+最省事的办法是用姊妹仓库的**一键安装器**：到 [琉璃 Releases](https://github.com/LilycleHeart/qqnt-liuli-theme/releases/latest) 下载 `QQNT-LiteLoader-Installer.exe`，双击点「一键安装」，它会装好 LiteLoader（含文件校验补丁）。
 
-| 文件 | 放到哪里 | 作用 |
-|---|---|---|
-| `dbghelp_x64.dll` → 改名 `dbghelp.dll` | QQ 安装目录（和 `QQ.exe` 同级，如 `C:\Program Files\Tencent\QQNT\`） | 跳过文件校验，加载 LiteLoader |
-| `QQ.exe`（补丁版） | QQ 安装目录，覆盖原来的 | 配套补丁，缺它启动会报「文件损坏」 |
-
-> **先备份**原来的 `dbghelp.dll` 和 `QQ.exe` 再覆盖。完整步骤见 [LiteLoaderQQNT 官方文档](https://liteloaderqqnt.github.io/guide/install.html)。
+> 手动安装见 [LiteLoaderQQNT 官方文档](https://liteloaderqqnt.github.io/guide/install.html)：QQ 9.9.x 会校验自身文件，需用 `dbghelp_x64.dll`（改名 `dbghelp.dll`）+ 补丁版 `QQ.exe` 放进 QQ 安装目录绕过（先备份原文件）。
 
 ### 第二步：装插件
 
 1. 把本仓库放到 `LiteLoaderQQNT\plugins\qq-enhance\`
 2. 重启 QQ
 3. QQ 设置左栏找到「**QQ 增强**」，按需开关各功能
+
+> 一键安装器只装 LiteLoader + 琉璃主题，不含本插件，所以本插件需按上面手动放入。
 
 ## 🗄️ 数据
 
