@@ -108,7 +108,32 @@ function saveRecalled() {
 }
 
 const safeId = id => String(id).replace(/[^0-9A-Za-z_-]/g, "");
-const clone = v => JSON.parse(JSON.stringify(v));
+// 消息里有 Map 字段（msgAttrs、图片的 thumbPath 等），JSON 会把它变成 {}，
+// QQ 渲染时调 .get() 直接报错，消息就成了空白一条。所以复制用 structuredClone，存盘时把 Map 标出来。
+const clone = v => {
+    try { return structuredClone(v); } catch (e) { return JSON.parse(stringify(v), revive); }
+};
+const MAP_TAG = "__qqeMap";
+const stringify = v => JSON.stringify(v, (_k, x) => x instanceof Map ? { [MAP_TAG]: [...x.entries()] } : x);
+const revive = (_k, x) => x && typeof x === "object" && Array.isArray(x[MAP_TAG]) && Object.keys(x).length === 1 ? new Map(x[MAP_TAG]) : x;
+// 旧版存盘的文件里 Map 已经变成普通对象了，按已知字段改回 Map
+function toMap(o) {
+    if (o instanceof Map) return o;
+    const m = new Map();
+    if (o && typeof o === "object") for (const [k, v] of Object.entries(o)) m.set(/^\d+$/.test(k) ? Number(k) : k, v);
+    return m;
+}
+function fixMaps(msg) {
+    if (!msg || typeof msg !== "object") return msg;
+    if (!(msg.msgAttrs instanceof Map)) msg.msgAttrs = toMap(msg.msgAttrs);
+    for (const el of Array.isArray(msg.elements) ? msg.elements : []) {
+        if (!el || typeof el !== "object") continue;
+        for (const sub of Object.values(el)) {
+            if (sub && typeof sub === "object" && "thumbPath" in sub && !(sub.thumbPath instanceof Map)) sub.thumbPath = toMap(sub.thumbPath);
+        }
+    }
+    return msg;
+}
 
 function remember(msg) {
     const id = String(msg.msgId);
@@ -123,7 +148,7 @@ function lookup(id) {
     const file = path.join(MSG_DIR, safeId(id) + ".json");
     try {
         if (fs.existsSync(file)) {
-            const msg = JSON.parse(fs.readFileSync(file, "utf8"));
+            const msg = fixMaps(JSON.parse(fs.readFileSync(file, "utf8"), revive));
             cache.set(id, msg);
             return msg;
         }
@@ -134,7 +159,7 @@ function lookup(id) {
 function persist(msg) {
     const file = path.join(MSG_DIR, safeId(msg.msgId) + ".json");
     if (fs.existsSync(file)) return;
-    fs.writeFile(file, JSON.stringify(msg), () => {});
+    fs.writeFile(file, stringify(msg), () => {});
 }
 
 ipcMain.handle(CH.recalledList, () => Object.fromEntries(recalled));
