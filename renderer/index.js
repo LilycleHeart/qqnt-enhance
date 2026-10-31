@@ -9,7 +9,7 @@
 import { installStickers, NATIVE_TABS } from "./stickers.js";
 
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 let stickers = null;
 
 function recordOf(el) {
@@ -321,6 +321,46 @@ function watchQuoteAt() {
     setTimeout(() => ob.disconnect(), 1600);
 }
 
+/* ════════════════ 6. 卡片用外部浏览器打开 ════════════════
+ * B 站等分享的「QQ小程序」卡片，QQ 会去开小程序。QQ 被 LiteLoader 改过文件，
+ * 小程序自检失败，只弹「文件已损坏」。这里先截下点击，从卡片数据里取网页链接，交给默认浏览器。
+ * 卡片是一块 canvas，点击在 document 捕获阶段拦掉，QQ 自己就收不到。 */
+function arkUrl(rec) {
+    const el = rec && Array.isArray(rec.elements) && rec.elements.find(x => x && x.arkElement);
+    if (!el) return "";
+    let data;
+    try { data = JSON.parse(el.arkElement.bytesData); } catch (e) { return ""; }
+    const meta = (data && data.meta) || {};
+    const fix = u => {
+        u = String(u || "").trim();
+        if (!u) return "";
+        if (!/^[a-z]+:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+        return /^https?:\/\//i.test(u) ? u : "";
+    };
+    for (const v of Object.values(meta)) {
+        if (!v || typeof v !== "object") continue;
+        const u = fix(v.qqdocurl) || fix(v.jumpUrl) || fix(v.url);
+        if (u) return u;
+    }
+    return "";
+}
+
+function arkTarget(e) {
+    if (!config.arkExternal || e.button !== 0) return null;
+    const card = e.target && e.target.closest && e.target.closest(".ark-msg-content-container .ark-item-container");
+    if (!card) return null;
+    return arkUrl(recordOf(card)) || null;
+}
+
+["pointerdown", "mousedown", "pointerup", "mouseup", "click", "dblclick"].forEach(type =>
+    document.addEventListener(type, e => {
+        const url = arkTarget(e);
+        if (!url) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (type === "click") api.openExternal(url).then(ok => toast(ok ? "已用浏览器打开" : "打不开这个链接")).catch(() => {});
+    }, true));
+
 /* ════════════════ 启动 ════════════════ */
 function start() {
     if (!api || window.__qqEnhanceStarted) return;
@@ -355,6 +395,7 @@ const FEATURES = [
     ["chatPos", "记住浏览位置", "切回会话时停在上次看到的地方，而不是跳到最底下。"],
     ["repeat", "右键复读", "消息右键菜单里加一项「复读」，把这条消息原样再发一次。"],
     ["quoteNoAt", "引用时不带 @", "点「引用」时，不自动在输入框里插入 @对方。"],
+    ["arkExternal", "卡片用浏览器打开", "点 B 站等分享卡片（QQ小程序），用电脑默认浏览器打开网页，不再弹「文件已损坏」。"],
     ["stickers", "本地表情包", "表情面板底部多一个「本地表情」分类，发送表情文件夹里的图片。每个子文件夹是一个分组，另有收藏分组。"],
 ];
 

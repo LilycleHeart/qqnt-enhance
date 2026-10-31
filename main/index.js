@@ -28,6 +28,7 @@ const CH = {
     stats: "LiteLoader.qq_enhance.stats",
     clearSaved: "LiteLoader.qq_enhance.clearSaved",
     repeat: "LiteLoader.qq_enhance.repeat",
+    openExternal: "LiteLoader.qq_enhance.openExternal",
     stickerList: "LiteLoader.qq_enhance.stickerList",
     stickerFav: "LiteLoader.qq_enhance.stickerFav",
     stickerSend: "LiteLoader.qq_enhance.stickerSend",
@@ -35,7 +36,7 @@ const CH = {
     stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 
@@ -313,6 +314,17 @@ ipcMain.handle(CH.repeat, async (event, msg) => {
         log("repeat failed: " + e.message);
         return { error: e.message };
     }
+});
+
+/* ---------- 卡片用外部浏览器打开：只放行 http/https ---------- */
+ipcMain.handle(CH.openExternal, async (_e, url) => {
+    try {
+        const u = new URL(String(url));
+        if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+        await shell.openExternal(u.href);
+        log("open external " + u.href);
+        return true;
+    } catch (e) { log("open external failed: " + e.message); return false; }
 });
 
 /* ---------- 本地表情包 ----------
