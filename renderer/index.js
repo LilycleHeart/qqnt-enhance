@@ -280,6 +280,7 @@ function injectRepeat(tries) {
  * ProseMirror 会把这次 DOM 改动读回自己的文档（与用户删字走同一条路）。 */
 let quoteUntil = 0;
 
+/* 入口一：右键菜单点「引用」 */
 document.addEventListener("click", e => {
     if (!config.quoteNoAt) return;
     const item = e.target && e.target.closest && e.target.closest(".q-context-menu-item");
@@ -287,6 +288,42 @@ document.addEventListener("click", e => {
     quoteUntil = Date.now() + 1500;
     watchQuoteAt();
 }, true);
+
+/* 入口二：双击消息引用（不走右键菜单） */
+document.addEventListener("dblclick", e => {
+    if (!config.quoteNoAt) return;
+    const t = e.target;
+    if (!t || !t.closest || !t.closest(".chat-msg-area, .message-container")) return;
+    quoteUntil = Date.now() + 1500;
+    watchQuoteAt();
+}, true);
+
+/* 入口兜底：编辑器里一出现引用块就剥紧跟的 @，不管引用是从哪触发的 */
+let quoteObs = null;
+let quoteObsTarget = null;
+let lastReplyWrap = null;
+
+function installQuoteWatch() {
+    if (!config.quoteNoAt) {
+        if (quoteObs) { quoteObs.disconnect(); quoteObs = null; quoteObsTarget = null; lastReplyWrap = null; }
+        return;
+    }
+    const pm = editorEl();
+    if (!pm) return;
+    if (quoteObs && quoteObsTarget === pm && pm.isConnected) return;
+    if (quoteObs) quoteObs.disconnect();
+    quoteObsTarget = pm;
+    lastReplyWrap = null;
+    quoteObs = new MutationObserver(() => {
+        if (!config.quoteNoAt) return;
+        const wrap = pm.querySelector(".editor-el__reply-wrapper");
+        if (!wrap || wrap === lastReplyWrap) return;
+        lastReplyWrap = wrap;
+        quoteUntil = Date.now() + 1500;
+        watchQuoteAt();
+    });
+    quoteObs.observe(pm, { childList: true, subtree: true });
+}
 
 function editorEl() {
     return document.querySelector(".chat-input-area .ProseMirror") || document.querySelector(".ProseMirror");
@@ -306,6 +343,7 @@ function stripQuoteAt() {
     }
     if (!p.childNodes.length) p.appendChild(document.createElement("br"));
     pm.focus();
+    try { console.warn("[qe-quote] stripped @"); } catch (e) { }
     return true;
 }
 
@@ -381,8 +419,10 @@ function start() {
     let timer = 0;
     new MutationObserver(() => {
         if (timer) return;
-        timer = setTimeout(() => { timer = 0; markRecalled(); checkPeer(); if (stickers) stickers.ensure(); }, 150);
+        timer = setTimeout(() => { timer = 0; markRecalled(); checkPeer(); installQuoteWatch(); if (stickers) stickers.ensure(); }, 150);
     }).observe(document.body, { childList: true, subtree: true });
+
+    installQuoteWatch();
 }
 
 if (document.body) start();
