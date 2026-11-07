@@ -37,7 +37,7 @@ const CH = {
     stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 
@@ -633,6 +633,82 @@ ipcMain.handle(CH.stickerSend, async (event, peer, file, hint) => {
         return { error: e.message };
     }
 });
+
+/* ════════════════ 发送时自动 pangu ════════════════
+ * 在渲染进程把发送请求交给内核之前改 msgElements 里的文本：聊天框里保持原样，
+ * 发出去的内容才带空格，用户不需要任何额外操作。
+ * 消息开头两个逗号（,, 或 ，，）时去掉逗号，并且这一条不处理。 */
+const CJK_RANGE = "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff";
+const COMMA_PREFIX = /^[\s\u00a0]*[,，][,，]/;
+
+function panguSpace(text) {
+    if (!text) return text;
+    let s = text;
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z0-9])", "g"), "$1 $2");
+    s = s.replace(new RegExp("([A-Za-z0-9])([" + CJK_RANGE + "])", "g"), "$1 $2");
+    // 括号只在中文外侧补空格，不往括号里面塞（成对的半角引号不处理，左右难分）
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])([\\[({<])", "g"), "$1 $2");
+    s = s.replace(new RegExp("([\\])}>])([" + CJK_RANGE + "])", "g"), "$1 $2");
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])\\s+([,.;:!?])", "g"), "$1$2");
+    s = s.replace(new RegExp("([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])([A-Za-z0-9])", "g"), "$1 $2");
+    s = s.replace(new RegExp("([A-Za-z0-9])([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])", "g"), "$1 $2");
+    s = s.replace(/[ \t]{2,}/g, " ");
+    s = s.split("\n").map(l => l.replace(/^[ \t]+|[ \t]+$/g, "")).join("\n");
+    return s;
+}
+
+function collectTextElements(node, out, depth) {
+    if (!node || typeof node !== "object" || depth > 8) return out;
+    if (Array.isArray(node)) {
+        for (const v of node) collectTextElements(v, out, depth + 1);
+        return out;
+    }
+    const te = node.textElement;
+    if (te && typeof te.content === "string") out.push(te);
+    for (const k of Object.keys(node)) {
+        const v = node[k];
+        if (v && typeof v === "object") collectTextElements(v, out, depth + 1);
+    }
+    return out;
+}
+
+/* 改写发送参数；返回 true 表示动过文本 */
+function rewritePangu(payload) {
+    const texts = collectTextElements(payload, [], 0).filter(te => !te.atType);
+    if (!texts.length) return false;
+    const first = texts[0];
+    if (COMMA_PREFIX.test(first.content)) {
+        const stripped = first.content.replace(/^[\s\u00a0]*[,，][,，]/, "");
+        if (stripped !== first.content) { first.content = stripped; return true; }
+        return false;
+    }
+    let changed = false;
+    for (const te of texts) {
+        const t = panguSpace(te.content);
+        if (t !== te.content) { te.content = t; changed = true; }
+    }
+    return changed;
+}
+
+let panguHooked = false;
+function installPanguHook() {
+    if (panguHooked) return;
+    panguHooked = true;
+    const originalEmit = ipcMain.emit.bind(ipcMain);
+    ipcMain.emit = function (channel, ...args) {
+        try {
+            if (config.pangu && typeof channel === "string" && channel.indexOf("RM_IPCFROM_RENDERER") === 0) {
+                const req = args.find(a => a && typeof a === "object" && typeof a.cmdName === "string");
+                if (req && req.cmdName === "nodeIKernelMsgService/sendMsg" && rewritePangu(req.payload)) {
+                    log("pangu sendMsg");
+                }
+            }
+        } catch (e) { log("pangu hook failed: " + (e && e.message)); }
+        return originalEmit(channel, ...args);
+    };
+}
+
+installPanguHook();
 
 log("main loaded | qqnt=" + LiteLoader.versions.qqnt + " recalled=" + recalled.size + " config=" + JSON.stringify(config));
 
