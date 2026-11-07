@@ -9,7 +9,7 @@
 import { installStickers, NATIVE_TABS } from "./stickers.js";
 
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+let config = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 let stickers = null;
 
 function recordOf(el) {
@@ -273,7 +273,52 @@ function injectRepeat(tries) {
     anchor.after(item);
 }
 
-/* ════════════════ 4. 引用时不带 @ ════════════════
+/* ════════════════ 4. 戳一戳无冷却 ════════════════
+ * 右键头像点「戳一戳」时把界面自己的处理截下来，改走内核接口，不受 10 秒冷却限制。
+ * 目标从右键的那条消息里取；认不出目标就不插手，交给 QQ 自己。 */
+let pokeCtx = null;
+let pokeAt = 0;
+
+document.addEventListener("contextmenu", e => {
+    if (!config.pokeNoCd) { pokeCtx = null; return; }
+    const rec = recordOf(e.target);
+    if (!rec || !rec.senderUid || !rec.peerUid) { pokeCtx = null; return; }
+    pokeCtx = {
+        chatType: rec.chatType,
+        peerUid: String(rec.peerUid),
+        guildId: rec.guildId ? String(rec.guildId) : "",
+        targetUin: rec.senderUin ? String(rec.senderUin) : "",
+    };
+}, true);
+
+function closeContextMenu() {
+    const menu = document.querySelector(".q-context-menu");
+    if (menu) menu.style.display = "none";
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+}
+
+/* 三个事件都拦：QQ 用哪个触发菜单项不确定，命中一次就够 */
+for (const type of ["mousedown", "mouseup", "click"]) {
+    document.addEventListener(type, e => {
+        if (!config.pokeNoCd || !pokeCtx || !pokeCtx.targetUin) return;
+        const item = e.target && e.target.closest && e.target.closest(".q-context-menu-item");
+        if (!item || (item.textContent || "").trim() !== "戳一戳") return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (Date.now() - pokeAt < 400) return;
+        pokeAt = Date.now();
+        const ctx = pokeCtx;
+        closeContextMenu();
+        api.poke(ctx).then(res => {
+            if (res && (res.error || (res.result !== undefined && res.result !== 0))) {
+                toast("戳一戳失败：" + (res.error || res.errMsg || res.result));
+            }
+        }).catch(() => toast("戳一戳失败"));
+    }, true);
+}
+
+/* ════════════════ 5. 引用时不带 @ ════════════════
  * 点「引用」后，QQ 往输入框里插：引用块 .editor-el__reply-wrapper + <p>@某人 </p>。
  * 实测：@ 是 <span class="editor-el__at" contenteditable="false">，后跟一个空格。
  * 点「引用」后 1.5 秒内，一出现紧跟引用块的 @，就把它和后面的空格删掉；
@@ -434,6 +479,7 @@ const FEATURES = [
     ["antiRecall", "防撤回", "别人撤回的消息照常显示，标上「已撤回」。只能还原插件运行时收到过的消息。"],
     ["chatPos", "记住浏览位置", "切回会话时停在上次看到的地方，而不是跳到最底下。"],
     ["repeat", "右键复读", "消息右键菜单里加一项「复读」，把这条消息原样再发一次。"],
+    ["pokeNoCd", "戳一戳无冷却", "右键点头像「戳一戳」不再受 10 秒冷却限制，可以连续戳。"],
     ["quoteNoAt", "引用时不带 @", "点「引用」时，不自动在输入框里插入 @对方。"],
     ["pangu", "发送时自动 pangu", "中英文、中文与数字之间自动补空格。消息开头打两个逗号（,, 或 ，，）则这条不处理，逗号本身也会去掉。"],
     ["arkExternal", "卡片用浏览器打开", "点 B 站等分享卡片（QQ小程序），用电脑默认浏览器打开网页，不再弹「文件已损坏」。"],

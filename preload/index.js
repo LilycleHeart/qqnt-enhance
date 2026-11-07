@@ -12,6 +12,7 @@ const api = {
     stats: () => ipcRenderer.invoke(P + "stats"),
     clearSaved: () => ipcRenderer.invoke(P + "clearSaved"),
     repeat: msg => ipcRenderer.invoke(P + "repeat", msg),
+    poke: ctx => ipcRenderer.invoke(P + "poke", ctx),
     openExternal: url => ipcRenderer.invoke(P + "openExternal", url),
     stickerList: () => ipcRenderer.invoke(P + "stickerList"),
     stickerFav: (file, on) => ipcRenderer.invoke(P + "stickerFav", file, on),

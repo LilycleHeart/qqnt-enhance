@@ -29,6 +29,7 @@ const CH = {
     stats: "LiteLoader.qq_enhance.stats",
     clearSaved: "LiteLoader.qq_enhance.clearSaved",
     repeat: "LiteLoader.qq_enhance.repeat",
+    poke: "LiteLoader.qq_enhance.poke",
     openExternal: "LiteLoader.qq_enhance.openExternal",
     stickerList: "LiteLoader.qq_enhance.stickerList",
     stickerFav: "LiteLoader.qq_enhance.stickerFav",
@@ -37,7 +38,7 @@ const CH = {
     stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 
@@ -458,6 +459,28 @@ ipcMain.handle(CH.repeat, async (event, msg) => {
         return res;
     } catch (e) {
         log("repeat failed: " + e.message);
+        return { error: e.message };
+    }
+});
+
+/* ---------- 戳一戳无冷却 ----------
+ * 界面把「戳一戳」菜单项的点击拦下来之后走到这里，直接调内核 sendNudge 发。
+ * 私聊的 chatUin 用对方 QQ 号，群聊用群号。 */
+ipcMain.handle(CH.poke, async (event, ctx) => {
+    if (!config.pokeNoCd) return { error: "戳一戳无冷却已关闭" };
+    try {
+        if (!ctx || !ctx.peerUid || !ctx.targetUin) return { error: "没认出戳的是谁" };
+        const peer = { chatType: ctx.chatType, peerUid: String(ctx.peerUid), guildId: ctx.guildId || "" };
+        const chatUin = ctx.chatType === 1 ? String(ctx.targetUin) : String(ctx.peerUid);
+        const res = await invokeNT(event.sender.id, "nodeIKernelMsgService/sendNudge", [{
+            peer,
+            targetUin: String(ctx.targetUin),
+            chatUin,
+        }, null]);
+        log("nudge " + peer.peerUid + " -> " + ctx.targetUin + " : " + JSON.stringify(res).slice(0, 200));
+        return res;
+    } catch (e) {
+        log("nudge failed: " + e.message);
         return { error: e.message };
     }
 });
