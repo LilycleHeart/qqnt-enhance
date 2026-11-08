@@ -10,6 +10,8 @@ const fakeWin = { isDestroyed: () => false, webContents: { send(ch, ...a) { sent
 const handlers = {};
 const fakeElectron = {
     ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; }, on: () => {} },
+    app: { on: () => {} },
+    webContents: { getAllWebContents: () => [] },
     BrowserWindow: { getAllWindows: () => [fakeWin] },
 };
 const origLoad = Module._load;
