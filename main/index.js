@@ -10,7 +10,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { ipcMain, BrowserWindow, shell, dialog } = require("electron");
+const { execFile } = require("node:child_process");
+const { app, ipcMain, BrowserWindow, webContents, shell, dialog } = require("electron");
 
 const SLUG = "qq-enhance";
 const DATA = path.join(LiteLoader.path.data, SLUG);
@@ -212,44 +213,165 @@ function findMsgLists(value, depth, out) {
     return out;
 }
 
-// 返回 true 表示整条发送要拦掉
-function handle(args) {
-    if (!config.antiRecall) return false;
-    const cmd = args && args[1] && args[1].cmdName;
-    const lists = findMsgLists(args, 0, []);
-    if (!lists.length) return false;
-
-    let restoredAll = true, touched = 0;
-    for (const list of lists) {
-        for (const msg of list) {
-            if (!msg || msg.msgId === undefined) continue;
-            touched++;
-            const rv = revokeOf(msg);
-            if (!rv) { remember(msg); restoredAll = false; continue; }
-            if (isOwnRecall(rv)) { restoredAll = false; continue; }
-
-            const id = String(msg.msgId);
-            const old = lookup(id);
-            if (!old || !Array.isArray(old.elements) || revokeOf(old)) { restoredAll = false; continue; }
-
-            const nick = rv.isSelfOperate ? "你" : (rv.operatorMemRemark || rv.operatorRemark || rv.operatorNick || "对方");
-            const copy = clone(old);                      // 副本：QQ 之后原地改对象也不影响缓存
-            for (const k of Object.keys(copy)) msg[k] = copy[k];
-            persist(old);
-            if (!recalled.has(id)) {
-                recalled.set(id, nick);
-                saveRecalled();
-                log("recalled " + id + " by " + nick + " via " + (cmd || "response"));
-            }
-            setTimeout(() => broadcast(CH.recalled, id, nick), 100);
-        }
+// 收集事件里所有消息记录（不只 msgList：快速撤回时原文可能挂在 payload.records 等位置）
+function collectMessageRecords(value, out, seen, depth) {
+    if (!value || typeof value !== "object" || depth > 6 || out.length >= 80) return out;
+    if (seen.has(value)) return out;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        for (const item of value) collectMessageRecords(item, out, seen, depth + 1);
+        return out;
     }
-    return touched > 0 && restoredAll && UPDATE_CMDS.has(cmd);
+    if (value.msgId !== undefined && Array.isArray(value.elements)) {
+        out.push(value);
+        return out;
+    }
+    for (const key of Object.keys(value)) collectMessageRecords(value[key], out, seen, depth + 1);
+    return out;
 }
 
-function hookWindow(window) {
-    const wc = window.webContents;
-    if (wc.__qqEnhanceHooked) return;
+function restoreOne(msg, rv, cmd) {
+    const id = String(msg.msgId);
+    const old = lookup(id);
+    if (!old || !Array.isArray(old.elements) || revokeOf(old)) return false;
+
+    const nick = rv.isSelfOperate ? "你" : (rv.operatorMemRemark || rv.operatorRemark || rv.operatorNick || "对方");
+    const copy = clone(old);                      // 副本：QQ 之后原地改对象也不影响缓存
+    for (const k of Object.keys(copy)) msg[k] = copy[k];
+    persist(old);
+    if (!recalled.has(id)) {
+        recalled.set(id, nick);
+        saveRecalled();
+        log("recalled " + id + " by " + nick + " via " + (cmd || "response"));
+    }
+    setTimeout(() => broadcast(CH.recalled, id, nick), 100);
+    return true;
+}
+
+function collectRecentTargets(value, out, seen, depth) {
+    if (!value || typeof value !== "object" || depth > 8 || out.length >= 30) return out;
+    if (seen.has(value)) return out;
+    seen.add(value);
+    if (Array.isArray(value)) {
+        for (const item of value) collectRecentTargets(item, out, seen, depth + 1);
+        return out;
+    }
+    const msgId = value.msgId == null ? "" : String(value.msgId);
+    const chatType = Number(value.chatType ?? value.peer?.chatType);
+    const peerUid = String(value.peerUid ?? value.peer?.peerUid ?? "");
+    const guildId = String(value.guildId ?? value.peer?.guildId ?? "");
+    if (msgId && Number.isFinite(chatType) && chatType > 0 && peerUid) {
+        if (!out.some(item => item.msgId === msgId)) out.push({ msgId, chatType, peerUid, guildId });
+        return out;
+    }
+    for (const key of Object.keys(value)) collectRecentTargets(value[key], out, seen, depth + 1);
+    return out;
+}
+
+const recentFetches = new Map();
+function fetchMessageByTarget(wc, target) {
+    if (!wc || wc.isDestroyed?.() || !target || !target.msgId || String(target.msgId) === "0") return Promise.resolve([]);
+    if (recentFetches.has(target.msgId)) return Promise.resolve([]);
+    recentFetches.set(target.msgId, Date.now());
+    return invokeNT(wc.id, "nodeIKernelMsgService/getMsgsByMsgId", [{
+        peer: {
+            chatType: target.chatType,
+            peerUid: String(target.peerUid),
+            guildId: String(target.guildId || ""),
+        },
+        msgIds: [String(target.msgId)],
+    }, null]).then(result => {
+        const records = collectMessageRecords(result, [], new WeakSet(), 0);
+        for (const msg of records) remember(msg);
+        log("proactive fetch " + target.msgId + " -> " + records.length);
+        return records;
+    }).catch(e => {
+        log("proactive fetch failed: " + (e && e.message || e));
+        return [];
+    }).finally(() => {
+        setTimeout(() => recentFetches.delete(target.msgId), 5000);
+    });
+}
+
+function scheduleRecentFetches(wc, args) {
+    const targets = collectRecentTargets(args, [], new WeakSet(), 0).filter(t => String(t.msgId) !== "0");
+    // 启动/切换账号时最近联系人快照会一次带几十条历史，没必要全量拉；
+    // 新消息的增量事件通常只有 1~3 条，按需缓存即可。
+    if (targets.length > 12) { log("recent fetch baseline skipped " + targets.length); return; }
+    for (const target of targets.slice(0, 8)) fetchMessageByTarget(wc, target);
+}
+
+// 返回 true 表示整条发送要拦掉；返回 Promise 表示撤回原文还没到，先等一小段时间
+function handle(args, wc) {
+    if (!config.antiRecall) return false;
+
+    const cmd = args && args[1] && args[1].cmdName;
+    if (cmd && cmd.includes("onRecentContactListChangedVer2")) {
+        try { scheduleRecentFetches(wc, args); } catch (e) { log("recent fetch error: " + (e && e.message || e)); }
+    }
+
+    const records = collectMessageRecords(args, [], new WeakSet(), 0);
+    if (!records.length) return false;
+    const recalls = [];
+    let cached = false;
+
+    // 先把这一批里的普通消息全部记下来，再处理撤回：即使撤回记录排在原文前面也能命中
+    for (const msg of records) {
+        if (!msg || msg.msgId === undefined) continue;
+        if (revokeOf(msg)) recalls.push(msg);
+        else { remember(msg); cached = true; }
+    }
+
+    let restoredAll = true;
+    const pending = [];
+    for (const msg of recalls) {
+        const rv = revokeOf(msg);
+        if (!rv || isOwnRecall(rv)) { restoredAll = false; continue; }
+        if (!restoreOne(msg, rv, cmd)) {
+            restoredAll = false;
+            pending.push({ msg, rv, cmd });
+        }
+    }
+
+    // 快速撤回：原文事件可能比撤回事件晚几十毫秒到。先压住撤回事件，
+    // 等原文进入缓存后再把消息还原；超时才放行 QQ 的灰条。
+    if (pending.length) {
+        return new Promise(resolve => {
+            let tries = 0;
+            const fetches = pending.map(item => fetchMessageByTarget(wc, {
+                msgId: item.msg.msgId,
+                chatType: item.msg.chatType,
+                peerUid: item.msg.peerUid,
+                guildId: item.msg.guildId,
+            }));
+            const finish = () => {
+                let all = true;
+                for (const item of pending) {
+                    if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                }
+                resolve(all && cached === false && UPDATE_CMDS.has(cmd));
+            };
+            const retry = () => {
+                let all = true;
+                for (const item of pending) {
+                    if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                }
+                if (all) return resolve(cached === false && UPDATE_CMDS.has(cmd));
+                if (++tries > 10) {
+                    Promise.all(fetches).then(finish).catch(finish);
+                    return;
+                }
+                setTimeout(retry, 50);
+            };
+            setTimeout(retry, 30);
+        });
+    }
+
+    return records.length > 0 && restoredAll && cached === false && UPDATE_CMDS.has(cmd);
+}
+
+function hookWebContents(wc) {
+    if (!wc || wc.__qqEnhanceHooked) return;
     wc.__qqEnhanceHooked = true;
     const send = wc.send;
     wc.send = function (channel, ...args) {
@@ -262,12 +384,36 @@ function hookWindow(window) {
                 done(args[1]);
                 return;
             }
-            try { if (handle(args)) return; }
-            catch (e) { log("handle error: " + (e && e.stack || e)); }
+            try {
+                const result = handle(args, wc);
+                if (result && typeof result.then === "function") {
+                    result.then(handled => {
+                        if (!handled) {
+                            try { send.call(wc, channel, ...args); } catch (e) {}
+                        }
+                    }).catch(e => {
+                        log("handle async error: " + (e && e.stack || e));
+                        try { send.call(wc, channel, ...args); } catch (err) {}
+                    });
+                    return;
+                }
+                if (result) return;
+            } catch (e) { log("handle error: " + (e && e.stack || e)); }
         }
         return send.call(this, channel, ...args);
     };
 }
+
+function hookWindow(window) {
+    hookWebContents(window && window.webContents);
+}
+
+app.on("web-contents-created", (_event, wc) => {
+    try { hookWebContents(wc); } catch (e) { log("web-contents hook failed: " + (e && e.message || e)); }
+});
+try {
+    for (const wc of webContents.getAllWebContents()) hookWebContents(wc);
+} catch (e) { log("existing web-contents hook failed: " + (e && e.message || e)); }
 
 /* ---------- 调内核接口（复读用） ----------
  * 模仿渲染进程的请求：频道 RM_IPCFROM_RENDERER<id>，
