@@ -4,7 +4,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 
-const tmp = fs.mkdtempSync(path.join(process.env.KIROCREW_SCRATCH || os.tmpdir(), "ar-test-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ar-test-"));
 const sent = [];
 const fakeWin = { isDestroyed: () => false, webContents: { send(ch, ...a) { sent.push([ch, ...a]); } } };
 const handlers = {};

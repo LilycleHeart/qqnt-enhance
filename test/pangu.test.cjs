@@ -95,6 +95,13 @@ check("中文全角逗号后不硬加空格", textOf(emitSend([textEl("中文，
 check("半角括号外侧补空格", textOf(emitSend([textEl("测试(中文English)")])) === "测试 (中文 English)");
 check("版本号两侧补空格", textOf(emitSend([textEl("版本v2.0发布")])) === "版本 v2.0 发布");
 
+/* 3c. 占位符与代码块的交互（审查 F2/F3 回归） */
+check("代码块内的 URL 不被补空格", textOf(emitSend([textEl("```\n// 中文https://example.com/x\n```")])) === "```\n// 中文https://example.com/x\n```");
+check("行内代码内的 URL 不被补空格", textOf(emitSend([textEl("`中文https://example.com`")])) === "`中文https://example.com`");
+check("代码外的中文与 URL 正常补空格", textOf(emitSend([textEl("看中文https://example.com/x")])) === "看中文 https://example.com/x");
+check("用户输入占位符字符时整条跳过", textOf(emitSend([textEl("中文\uE000123\uE001中文English")])) === "中文\uE000123\uE001中文English");
+check("代码块+URL+正文混合不互相污染", textOf(emitSend([textEl("说明`中文https://a.com`后中文English")])) === "说明`中文https://a.com`后中文 English");
+
 /* 4. ,, / ，， 前缀豁免 */
 check(",, 前缀：去掉逗号且不处理", textOf(emitSend([textEl(",,中文English123")])) === "中文English123");
 check("，， 前缀：去掉逗号且不处理", textOf(emitSend([textEl("，，中文English")])) === "中文English");
@@ -128,6 +135,10 @@ check("重复处理保持幂等", msgAgain.msgElements[0].textElement.content ==
     check("每个请求只透传一次", originalEmits.length === seq + 1, "emit=" + originalEmits.length + " / send=" + (seq + 1));
     const cfg = await handlers["LiteLoader.qq_enhance.getConfig"]();
     check("默认值：pangu 开、戳一戳无冷却关", cfg.pangu === true && cfg.pokeNoCd === false, JSON.stringify({ pangu: cfg.pangu, pokeNoCd: cfg.pokeNoCd }));
+    // 审查 F1：每条消息都 appendFileSync 写日志会刷屏，只允许首次命中记一条
+    let logText = "";
+    try { logText = fs.readFileSync(path.join(tmp, "qq-enhance", "plugin.log"), "utf8"); } catch (e) {}
+    check("pangu 日志只记首次命中", (logText.match(/pangu sendMsg/g) || []).length === 1, "次数=" + (logText.match(/pangu sendMsg/g) || []).length);
 
     console.log(failed ? "SOME FAILED" : "ALL PASS");
     process.exit(failed ? 1 : 0);

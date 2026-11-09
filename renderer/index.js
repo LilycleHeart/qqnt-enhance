@@ -282,7 +282,9 @@ let pokeAt = 0;
 document.addEventListener("contextmenu", e => {
     if (!config.pokeNoCd) { pokeCtx = null; return; }
     const rec = recordOf(e.target);
-    if (!rec || !rec.senderUid || !rec.peerUid) { pokeCtx = null; return; }
+    // 只处理私聊/群聊；频道、临时会话等其它类型交回 QQ 自己处理
+    const ct = rec && Number(rec.chatType);
+    if (!rec || (ct !== 1 && ct !== 2) || !rec.senderUid || !rec.peerUid) { pokeCtx = null; return; }
     pokeCtx = {
         chatType: rec.chatType,
         peerUid: String(rec.peerUid),

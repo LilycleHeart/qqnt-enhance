@@ -678,11 +678,18 @@ const COMMA_PREFIX = /^[\s\u00a0]*[,，][,，]/;
 
 function panguSpace(text) {
     if (!text || !ANY_CJK.test(text)) return text; // 纯 ASCII 原样返回：代码、表格、缩进都不能动
+    // 用户自己输入了占位符字符（私有区 U+E000/U+E001）时直接跳过，避免被误当成占位符替换
+    if (text.indexOf("\uE000") !== -1 || text.indexOf("\uE001") !== -1) return text;
     const saved = [];
     const put = s => { saved.push(s); return "\uE000" + (saved.length - 1) + "\uE001"; };
+    // 代码先藏起来，后面所有规则都碰不到它（包括下面的 URL/路径补空格）
     let s = text
         .replace(/```[\s\S]*?```/g, put)                                     // 围栏代码块
-        .replace(/`[^`\n]*`/g, put)                                          // 行内代码
+        .replace(/`[^`\n]*`/g, put);                                          // 行内代码
+    // 中文紧贴 URL / Windows 路径时先补空格：必须在隐藏 URL 之前做，否则补不进保护罩
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])(https?:\\/\\/)", "g"), "$1 $2");
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z]:\\\\)", "g"), "$1 $2");
+    s = s
         .replace(/https?:\/\/[^\s\uE000\uE001\u3000-\u303f\uff00-\uffef]+/g, put) // URL（含 CJK 路径/参数）
         .replace(/[A-Za-z]:\\[^\s\uE000\uE001]+/g, put);                     // Windows 路径
     s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z0-9])", "g"), "$1 $2");
@@ -693,10 +700,8 @@ function panguSpace(text) {
     // 中文与标点之间的多余空格去掉（半角 + 全角），只吃空格/制表符，不吃换行
     s = s.replace(new RegExp("([" + CJK_RANGE + "])[ \\t]+([,.;:!?])", "g"), "$1$2");
     s = s.replace(new RegExp("([" + CJK_RANGE + "])[ \\t]+([、。，：；！？“”（）「」『』【】《》])", "g"), "$1$2");
-    // 占位符还原后，中文紧贴 URL / Windows 路径时补一个空格
+    // 还原：到这里所有规则都跑完了，代码块 / 行内代码 / URL / 路径都不会再被改
     s = s.replace(/\uE000(\d+)\uE001/g, (_m, i) => saved[Number(i)]);
-    s = s.replace(new RegExp("([" + CJK_RANGE + "])(https?:\\/\\/)", "g"), "$1 $2");
-    s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z]:\\\\)", "g"), "$1 $2");
     // 不合并连续空格、不去掉行首缩进：用户发代码片段/对齐文本时这是有意义的
     return s;
 }
@@ -765,7 +770,8 @@ function installPanguHook() {
                 if (req && req.cmdName === "nodeIKernelMsgService/sendMsg" &&
                     Array.isArray(payload) && payload[0] && Array.isArray(payload[0].msgElements) &&
                     state.rewrite(payload)) {
-                    log("pangu sendMsg");
+                    // 每条被改写的消息都同步写日志会刷屏（appendFileSync），只在首次命中时记一条，便于真机自检
+                    if (!installPanguHook.logged) { installPanguHook.logged = true; log("pangu sendMsg"); }
                 }
             }
         } catch (e) { log("pangu hook failed: " + (e && e.message)); }
