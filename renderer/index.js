@@ -388,7 +388,6 @@ function stripQuoteAt() {
     }
     if (!p.childNodes.length) p.appendChild(document.createElement("br"));
     pm.focus();
-    try { console.warn("[qe-quote] stripped @"); } catch (e) { }
     return true;
 }
 

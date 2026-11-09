@@ -91,8 +91,13 @@
 
 ## 🧪 测试
 
+离线测试不需要 QQ，只依赖 Node（内置模块，无 npm 依赖）：
+
 ```powershell
-node test/anti-recall.test.cjs
+node test/run-all.cjs          # 全部测试
+node test/anti-recall.test.cjs # 防撤回基础行为
+node test/anti-recall.race.test.cjs # 快速撤回 / 后台会话 / 大批量事件
+node test/pangu.test.cjs       # 自动 pangu 的改写规则
 ```
 
 ---

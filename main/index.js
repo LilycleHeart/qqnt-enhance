@@ -10,7 +10,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { execFile } = require("node:child_process");
 const { app, ipcMain, BrowserWindow, webContents, shell, dialog } = require("electron");
 
 const SLUG = "qq-enhance";
@@ -200,23 +199,12 @@ function isOwnRecall(rv) {
     return String(op) === String(orig);
 }
 
-// 在参数里找所有 msgList 数组（事件和接口返回的结构不同，统一按字段找）
-function findMsgLists(value, depth, out) {
-    if (!value || typeof value !== "object" || depth > 4) return out;
-    if (Array.isArray(value)) {
-        for (const v of value) findMsgLists(v, depth + 1, out);
-        return out;
-    }
-    if (Array.isArray(value.msgList)) out.push(value.msgList);
-    for (const k of ["payload", "result", "data"]) {
-        if (value[k] && typeof value[k] === "object") findMsgLists(value[k], depth + 1, out);
-    }
-    return out;
-}
-
 // 收集事件里所有消息记录（不只 msgList：快速撤回时原文可能挂在 payload.records 等位置）
+// 上限不能太小：一次 onMsgInfoListUpdate 可能带几百条（切会话、补历史），
+// 截断后这些消息既不进缓存、撤回也命中不了。
+const MAX_RECORDS = 1000;
 function collectMessageRecords(value, out, seen, depth) {
-    if (!value || typeof value !== "object" || depth > 6 || out.length >= 80) return out;
+    if (!value || typeof value !== "object" || depth > 6 || out.length >= MAX_RECORDS) return out;
     if (seen.has(value)) return out;
     seen.add(value);
     if (Array.isArray(value)) {
@@ -240,12 +228,14 @@ function restoreOne(msg, rv, cmd) {
     const copy = clone(old);                      // 副本：QQ 之后原地改对象也不影响缓存
     for (const k of Object.keys(copy)) msg[k] = copy[k];
     persist(old);
+    // 只有第一次登记时才广播：重试循环和 QQ 的重复推送都会再调进来，
+    // 无条件广播会让界面收到 N 次 recalled。
     if (!recalled.has(id)) {
         recalled.set(id, nick);
         saveRecalled();
         log("recalled " + id + " by " + nick + " via " + (cmd || "response"));
+        setTimeout(() => broadcast(CH.recalled, id, nick), 100);
     }
-    setTimeout(() => broadcast(CH.recalled, id, nick), 100);
     return true;
 }
 
@@ -324,10 +314,11 @@ function handle(args, wc) {
     }
 
     let restoredAll = true;
+    let selfRecallSkipped = false;    // 自撤回要放行，不能被 restoredAll 当成"还原失败"
     const pending = [];
     for (const msg of recalls) {
         const rv = revokeOf(msg);
-        if (!rv || isOwnRecall(rv)) { restoredAll = false; continue; }
+        if (!rv || isOwnRecall(rv)) { restoredAll = false; selfRecallSkipped = true; continue; }
         if (!restoreOne(msg, rv, cmd)) {
             restoredAll = false;
             pending.push({ msg, rv, cmd });
@@ -336,9 +327,13 @@ function handle(args, wc) {
 
     // 快速撤回：原文事件可能比撤回事件晚几十毫秒到。先压住撤回事件，
     // 等原文进入缓存后再把消息还原；超时才放行 QQ 的灰条。
-    if (pending.length) {
+    // 只有"整批都是撤回"才压住：同批里若还有普通消息（cached=true），压住会把
+    // 新消息一起延迟，这种情况就地还原，还原不了的按灰条照常放行。
+    if (pending.length && !cached) {
         return new Promise(resolve => {
             let tries = 0;
+            // 硬超时：内核不回包时 invokeNT 要 5s 才超时，不能让它把整条事件压 5 秒
+            const hardTimeout = new Promise(r => setTimeout(r, 500));
             const fetches = pending.map(item => fetchMessageByTarget(wc, {
                 msgId: item.msg.msgId,
                 chatType: item.msg.chatType,
@@ -346,30 +341,44 @@ function handle(args, wc) {
                 guildId: item.msg.guildId,
             }));
             const finish = () => {
-                let all = true;
-                for (const item of pending) {
-                    if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                try {
+                    let all = true;
+                    for (const item of pending) {
+                        if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                    }
+                    resolve(all && !selfRecallSkipped && cached === false && UPDATE_CMDS.has(cmd));
+                } catch (e) {
+                    log("restore finish failed: " + (e && e.stack || e));
+                    resolve(false);
                 }
-                resolve(all && cached === false && UPDATE_CMDS.has(cmd));
             };
             const retry = () => {
-                let all = true;
-                for (const item of pending) {
-                    if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                try {
+                    let all = true;
+                    for (const item of pending) {
+                        if (!restoreOne(item.msg, item.rv, item.cmd)) all = false;
+                    }
+                    if (all) return resolve(!selfRecallSkipped && cached === false && UPDATE_CMDS.has(cmd));
+                    if (++tries > 10) {
+                        Promise.race([Promise.all(fetches), hardTimeout]).then(finish, finish);
+                        return;
+                    }
+                    setTimeout(retry, 50);
+                } catch (e) {
+                    // 定时器里抛出的异常不会再被 hookWebContents 的 try/catch 接住，
+                    // 这里必须自己兜底：出错就当作没还原，把原事件放行。
+                    log("restore retry failed: " + (e && e.stack || e));
+                    resolve(false);
                 }
-                if (all) return resolve(cached === false && UPDATE_CMDS.has(cmd));
-                if (++tries > 10) {
-                    Promise.all(fetches).then(finish).catch(finish);
-                    return;
-                }
-                setTimeout(retry, 50);
             };
             setTimeout(retry, 30);
         });
     }
 
-    return records.length > 0 && restoredAll && cached === false && UPDATE_CMDS.has(cmd);
+    return restoredAll && cached === false && UPDATE_CMDS.has(cmd);
 }
+
+const pendingNT = new Map();      // callbackId -> resolve（invokeNT 用，先声明：hookWebContents 会用到）
 
 function hookWebContents(wc) {
     if (!wc || wc.__qqEnhanceHooked) return;
@@ -421,7 +430,6 @@ try {
  * {type:"request", callbackId, eventName:"ntApi", peerId} + {cmdName, cmdType:"invoke", payload}。
  * 格式参照 BetterQQNT 的 invokeNTApi 与本机实测（QQ 9.9.36）。
  * 回包不一定走假 sender，超时不算失败。 */
-const pendingNT = new Map();      // callbackId -> resolve
 function invokeNT(webContentsId, cmdName, args) {
     return new Promise(resolve => {
         const callbackId = crypto.randomUUID();
@@ -675,8 +683,7 @@ function panguSpace(text) {
     s = s.replace(new RegExp("([" + CJK_RANGE + "])\\s+([,.;:!?])", "g"), "$1$2");
     s = s.replace(new RegExp("([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])([A-Za-z0-9])", "g"), "$1 $2");
     s = s.replace(new RegExp("([A-Za-z0-9])([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])", "g"), "$1 $2");
-    s = s.replace(/[ \t]{2,}/g, " ");
-    s = s.split("\n").map(l => l.replace(/^[ \t]+|[ \t]+$/g, "")).join("\n");
+    // 不合并连续空格、不去掉行首缩进：用户发代码片段/对齐文本时这是有意义的
     return s;
 }
 
@@ -713,16 +720,22 @@ function rewritePangu(payload) {
     return changed;
 }
 
-let panguHooked = false;
+// 挂在 ipcMain 对象上而不是模块变量上：LiteLoader 热重载会重新执行本文件，
+// 模块变量归零后再包一层就会重复改写、重复打日志。
 function installPanguHook() {
-    if (panguHooked) return;
-    panguHooked = true;
+    if (!ipcMain || typeof ipcMain.emit !== "function" || ipcMain.__qqEnhancePanguHooked) return;
+    ipcMain.__qqEnhancePanguHooked = true;
     const originalEmit = ipcMain.emit.bind(ipcMain);
     ipcMain.emit = function (channel, ...args) {
         try {
             if (config.pangu && typeof channel === "string" && channel.indexOf("RM_IPCFROM_RENDERER") === 0) {
                 const req = args.find(a => a && typeof a === "object" && typeof a.cmdName === "string");
-                if (req && req.cmdName === "nodeIKernelMsgService/sendMsg" && rewritePangu(req.payload)) {
+                const payload = req && req.payload;
+                // 只认「发消息」请求：回包/其它 cmdName 一律不碰。
+                // 用 payload 形态判断而不是 cmdType，避免 QQ 侧换 invoke/send 写法时静默失效。
+                if (req && req.cmdName === "nodeIKernelMsgService/sendMsg" &&
+                    Array.isArray(payload) && payload[0] && Array.isArray(payload[0].msgElements) &&
+                    rewritePangu(payload)) {
                     log("pangu sendMsg");
                 }
             }
