@@ -286,6 +286,7 @@ document.addEventListener("contextmenu", e => {
     pokeCtx = {
         chatType: rec.chatType,
         peerUid: String(rec.peerUid),
+        peerUin: rec.peerUin ? String(rec.peerUin) : "",
         guildId: rec.guildId ? String(rec.guildId) : "",
         targetUin: rec.senderUin ? String(rec.senderUin) : "",
     };
@@ -298,8 +299,9 @@ function closeContextMenu() {
     document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
 }
 
-/* 三个事件都拦：QQ 用哪个触发菜单项不确定，命中一次就够 */
-for (const type of ["mousedown", "mouseup", "click"]) {
+/* 四个事件都拦：QQ 用哪个触发菜单项不确定，命中一次就够；pointer 事件也要拦，否则 QQ 若监听
+ * pointerdown 会和我们各发一次 */
+for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
     document.addEventListener(type, e => {
         if (!config.pokeNoCd || !pokeCtx || !pokeCtx.targetUin) return;
         const item = e.target && e.target.closest && e.target.closest(".q-context-menu-item");
@@ -340,7 +342,8 @@ document.addEventListener("dblclick", e => {
     const t = e.target;
     if (!t || !t.closest || !t.closest(".chat-msg-area, .message-container")) return;
     quoteUntil = Date.now() + 1500;
-    watchQuoteAt();
+    // 只等「新出现」的引用块：草稿里已有的 @ 是用户自己打的，不能动
+    watchQuoteAt(false);
 }, true);
 
 /* 入口兜底：编辑器里一出现引用块就剥紧跟的 @，不管引用是从哪触发的 */
@@ -378,8 +381,20 @@ function stripQuoteAt() {
     const pm = editorEl();
     if (!pm || !pm.querySelector(".editor-el__reply-wrapper")) return false;
     const p = pm.querySelector(".editor-el__reply-wrapper ~ p");
-    const at = p && p.querySelector(".editor-el__at");
-    if (!at || at !== p.firstElementChild) return false;
+    if (!p) return false;
+    const at = p.querySelector(".editor-el__at");
+    if (!at) return false;
+    // @ 必须是这个段落里第一个「有内容」的节点；跳过 ProseMirror 的占位 widget
+    let node = p.firstChild;
+    while (node && node !== at) {
+        if (node.nodeType === 3 && !node.data.trim()) { node = node.nextSibling; continue; }
+        if (node.nodeType === 1 && /exeditor-placeholder|ProseMirror-widget|ProseMirror-separator/.test(String(node.className || ""))) {
+            node = node.nextSibling;
+            continue;
+        }
+        return false;
+    }
+    if (node !== at) return false;
     const next = at.nextSibling;
     at.remove();
     if (next && next.nodeType === 3) {
@@ -391,10 +406,11 @@ function stripQuoteAt() {
     return true;
 }
 
-function watchQuoteAt() {
+function watchQuoteAt(allowExisting) {
     const pm = editorEl();
     if (!pm) return;
-    if (stripQuoteAt()) return;
+    // 入口一/兜底 observer：引用块已经出现，立刻剥；双击入口传 false，不能动草稿里已有的 @
+    if (allowExisting !== false && stripQuoteAt()) return;
     const ob = new MutationObserver(() => {
         if (Date.now() > quoteUntil) { ob.disconnect(); return; }
         if (stripQuoteAt()) ob.disconnect();
@@ -479,7 +495,7 @@ const FEATURES = [
     ["chatPos", "记住浏览位置", "切回会话时停在上次看到的地方，而不是跳到最底下。"],
     ["repeat", "右键复读", "消息右键菜单里加一项「复读」，把这条消息原样再发一次。"],
     ["pokeNoCd", "戳一戳无冷却", "右键点头像「戳一戳」不再受 10 秒冷却限制，可以连续戳。"],
-    ["quoteNoAt", "引用时不带 @", "点「引用」时，不自动在输入框里插入 @对方。"],
+    ["quoteNoAt", "引用时不带 @", "点「引用」或双击消息引用时，不自动在输入框里插入 @对方。"],
     ["pangu", "发送时自动 pangu", "中英文、中文与数字之间自动补空格。消息开头打两个逗号（,, 或 ，，）则这条不处理，逗号本身也会去掉。"],
     ["arkExternal", "卡片用浏览器打开", "点 B 站等分享卡片（QQ小程序），用电脑默认浏览器打开网页，不再弹「文件已损坏」。"],
     ["stickers", "本地表情包", "表情面板底部多一个「本地表情」分类，发送表情文件夹里的图片。每个子文件夹是一个分组，另有收藏分组。"],

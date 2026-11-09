@@ -473,13 +473,16 @@ ipcMain.handle(CH.repeat, async (event, msg) => {
 
 /* ---------- 戳一戳无冷却 ----------
  * 界面把「戳一戳」菜单项的点击拦下来之后走到这里，直接调内核 sendNudge 发。
- * 私聊的 chatUin 用对方 QQ 号，群聊用群号。 */
+ * 私聊的 chatUin 用会话对方的 uin，群聊用群号（peerUid）。 */
 ipcMain.handle(CH.poke, async (event, ctx) => {
     if (!config.pokeNoCd) return { error: "戳一戳无冷却已关闭" };
     try {
         if (!ctx || !ctx.peerUid || !ctx.targetUin) return { error: "没认出戳的是谁" };
-        const peer = { chatType: ctx.chatType, peerUid: String(ctx.peerUid), guildId: ctx.guildId || "" };
-        const chatUin = ctx.chatType === 1 ? String(ctx.targetUin) : String(ctx.peerUid);
+        const chatType = Number(ctx.chatType);
+        if (chatType !== 1 && chatType !== 2) return { error: "没认出戳的是谁" };
+        const peer = { chatType, peerUid: String(ctx.peerUid), guildId: ctx.guildId || "" };
+        // 私聊的 chatUin 是「会话对方的 uin」，不是被戳目标：戳自己的消息时两者不同
+        const chatUin = chatType === 1 ? String(ctx.peerUin || ctx.targetUin) : String(ctx.peerUid);
         const res = await invokeNT(event.sender.id, "nodeIKernelMsgService/sendNudge", [{
             peer,
             targetUin: String(ctx.targetUin),
@@ -670,19 +673,30 @@ ipcMain.handle(CH.stickerSend, async (event, peer, file, hint) => {
  * 发出去的内容才带空格，用户不需要任何额外操作。
  * 消息开头两个逗号（,, 或 ，，）时去掉逗号，并且这一条不处理。 */
 const CJK_RANGE = "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff";
+const ANY_CJK = new RegExp("[" + CJK_RANGE + "]");
 const COMMA_PREFIX = /^[\s\u00a0]*[,，][,，]/;
 
 function panguSpace(text) {
-    if (!text) return text;
-    let s = text;
+    if (!text || !ANY_CJK.test(text)) return text; // 纯 ASCII 原样返回：代码、表格、缩进都不能动
+    const saved = [];
+    const put = s => { saved.push(s); return "\uE000" + (saved.length - 1) + "\uE001"; };
+    let s = text
+        .replace(/```[\s\S]*?```/g, put)                                     // 围栏代码块
+        .replace(/`[^`\n]*`/g, put)                                          // 行内代码
+        .replace(/https?:\/\/[^\s\uE000\uE001\u3000-\u303f\uff00-\uffef]+/g, put) // URL（含 CJK 路径/参数）
+        .replace(/[A-Za-z]:\\[^\s\uE000\uE001]+/g, put);                     // Windows 路径
     s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z0-9])", "g"), "$1 $2");
     s = s.replace(new RegExp("([A-Za-z0-9])([" + CJK_RANGE + "])", "g"), "$1 $2");
     // 括号只在中文外侧补空格，不往括号里面塞（成对的半角引号不处理，左右难分）
     s = s.replace(new RegExp("([" + CJK_RANGE + "])([\\[({<])", "g"), "$1 $2");
     s = s.replace(new RegExp("([\\])}>])([" + CJK_RANGE + "])", "g"), "$1 $2");
-    s = s.replace(new RegExp("([" + CJK_RANGE + "])\\s+([,.;:!?])", "g"), "$1$2");
-    s = s.replace(new RegExp("([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])([A-Za-z0-9])", "g"), "$1 $2");
-    s = s.replace(new RegExp("([A-Za-z0-9])([\u3001\u3002\uff0c\uff1a\uff1b\uff01\uff1f\u201c\u201d\uff08\uff09])", "g"), "$1 $2");
+    // 中文与标点之间的多余空格去掉（半角 + 全角），只吃空格/制表符，不吃换行
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])[ \\t]+([,.;:!?])", "g"), "$1$2");
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])[ \\t]+([、。，：；！？“”（）「」『』【】《》])", "g"), "$1$2");
+    // 占位符还原后，中文紧贴 URL / Windows 路径时补一个空格
+    s = s.replace(/\uE000(\d+)\uE001/g, (_m, i) => saved[Number(i)]);
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])(https?:\\/\\/)", "g"), "$1 $2");
+    s = s.replace(new RegExp("([" + CJK_RANGE + "])([A-Za-z]:\\\\)", "g"), "$1 $2");
     // 不合并连续空格、不去掉行首缩进：用户发代码片段/对齐文本时这是有意义的
     return s;
 }
@@ -706,10 +720,16 @@ function collectTextElements(node, out, depth) {
 function rewritePangu(payload) {
     const texts = collectTextElements(payload, [], 0).filter(te => !te.atType);
     if (!texts.length) return false;
-    const first = texts[0];
-    if (COMMA_PREFIX.test(first.content)) {
+    // 转义标记按「整条消息的第一个非空文本」判断（QQ 可能先给一个空 textElement）
+    const first = texts.find(te => te.content !== "") || texts[0];
+    if (first && COMMA_PREFIX.test(first.content)) {
         const stripped = first.content.replace(/^[\s\u00a0]*[,，][,，]/, "");
-        if (stripped !== first.content) { first.content = stripped; return true; }
+        if (stripped !== first.content) {
+            // 只打了 ",," 时不要改成空消息
+            if (!stripped.trim()) return false;
+            first.content = stripped;
+            return true;
+        }
         return false;
     }
     let changed = false;
@@ -720,22 +740,31 @@ function rewritePangu(payload) {
     return changed;
 }
 
-// 挂在 ipcMain 对象上而不是模块变量上：LiteLoader 热重载会重新执行本文件，
-// 模块变量归零后再包一层就会重复改写、重复打日志。
+/* 钩子只装一次：热重载时更新闭包里的开关/实现，避免在 ipcMain.emit 上层层套娃、
+ * 也避免旧包装继续按旧配置改写。 */
+const PANGU_HOOK = Symbol.for("qqEnhance.panguHook");
 function installPanguHook() {
-    if (!ipcMain || typeof ipcMain.emit !== "function" || ipcMain.__qqEnhancePanguHooked) return;
-    ipcMain.__qqEnhancePanguHooked = true;
+    if (!ipcMain) return;
+    let state = ipcMain[PANGU_HOOK];
+    if (!state) {
+        state = { installed: false, enabled: () => true, rewrite: () => false };
+        Object.defineProperty(ipcMain, PANGU_HOOK, { value: state, configurable: true });
+    }
+    state.enabled = () => !!config.pangu;
+    state.rewrite = rewritePangu;
+    if (state.installed || typeof ipcMain.emit !== "function") return;
+    state.installed = true;
     const originalEmit = ipcMain.emit.bind(ipcMain);
     ipcMain.emit = function (channel, ...args) {
         try {
-            if (config.pangu && typeof channel === "string" && channel.indexOf("RM_IPCFROM_RENDERER") === 0) {
+            if (state.enabled() && typeof channel === "string" && channel.indexOf("RM_IPCFROM_RENDERER") === 0) {
                 const req = args.find(a => a && typeof a === "object" && typeof a.cmdName === "string");
                 const payload = req && req.payload;
                 // 只认「发消息」请求：回包/其它 cmdName 一律不碰。
                 // 用 payload 形态判断而不是 cmdType，避免 QQ 侧换 invoke/send 写法时静默失效。
                 if (req && req.cmdName === "nodeIKernelMsgService/sendMsg" &&
                     Array.isArray(payload) && payload[0] && Array.isArray(payload[0].msgElements) &&
-                    rewritePangu(payload)) {
+                    state.rewrite(payload)) {
                     log("pangu sendMsg");
                 }
             }

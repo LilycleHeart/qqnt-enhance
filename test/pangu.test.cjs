@@ -84,6 +84,17 @@ check("保留行首缩进（代码片段）", textOf(emitSend([textEl("    中�
 check("保留连续空格（对齐文本）", textOf(emitSend([textEl("a  b中文")])) === "a  b 中文");
 check("保留换行", textOf(emitSend([textEl("第一行中文English\n第二行中文")])) === "第一行中文 English\n第二行中文");
 
+/* 3b. 代码 / URL / 路径不破坏 */
+check("围栏代码块内不补空格", textOf(emitSend([textEl("```js\nconst a=中文English;\n```")])) === "```js\nconst a=中文English;\n```");
+check("行内代码内不补空格", textOf(emitSend([textEl("看这个`中文English`代码")])) === "看这个`中文English`代码");
+check("代码外照常处理、代码内不动", textOf(emitSend([textEl("前缀English`内联中文Code`后缀中文")])) === "前缀 English`内联中文Code`后缀中文");
+check("URL 整体不动、前面中文补空格", textOf(emitSend([textEl("中文https://example.com/a中文参数")])) === "中文 https://example.com/a中文参数");
+check("Windows 路径整体不动", textOf(emitSend([textEl("打开C:\\中文\\file.txt看")])) === "打开 C:\\中文\\file.txt看");
+check("纯 ASCII 原样返回", textOf(emitSend([textEl("| a | b |\n| 1 | 2 |")])) === "| a | b |\n| 1 | 2 |");
+check("中文全角逗号后不硬加空格", textOf(emitSend([textEl("中文，English")])) === "中文，English");
+check("半角括号外侧补空格", textOf(emitSend([textEl("测试(中文English)")])) === "测试 (中文 English)");
+check("版本号两侧补空格", textOf(emitSend([textEl("版本v2.0发布")])) === "版本 v2.0 发布");
+
 /* 4. ,, / ，， 前缀豁免 */
 check(",, 前缀：去掉逗号且不处理", textOf(emitSend([textEl(",,中文English123")])) === "中文English123");
 check("，， 前缀：去掉逗号且不处理", textOf(emitSend([textEl("，，中文English")])) === "中文English");
@@ -111,7 +122,8 @@ check("重复处理保持幂等", msgAgain.msgElements[0].textElement.content ==
     check("重新打开后恢复改写", textOf(emitSend([textEl("中文English")])) === "中文 English");
 
     /* 7. hook 只装一层 + 每个请求只透传一次 */
-    check("ipcMain.emit 上有幂等标记", fakeIpcMain.__qqEnhancePanguHooked === true);
+    const hookState = fakeIpcMain[Symbol.for("qqEnhance.panguHook")];
+    check("ipcMain.emit 上有幂等标记", !!hookState && hookState.installed === true);
     // +1 是第 5 节幂等用例里那次手写 emit（没有走 emitSend，不计 seq）
     check("每个请求只透传一次", originalEmits.length === seq + 1, "emit=" + originalEmits.length + " / send=" + (seq + 1));
 
