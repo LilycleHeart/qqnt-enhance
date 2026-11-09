@@ -9,7 +9,7 @@
 import { installStickers, NATIVE_TABS } from "./stickers.js";
 
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+let config = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: false, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 let stickers = null;
 
 function recordOf(el) {
@@ -494,7 +494,7 @@ const FEATURES = [
     ["antiRecall", "防撤回", "别人撤回的消息照常显示，标上「已撤回」。只能还原插件运行时收到过的消息。"],
     ["chatPos", "记住浏览位置", "切回会话时停在上次看到的地方，而不是跳到最底下。"],
     ["repeat", "右键复读", "消息右键菜单里加一项「复读」，把这条消息原样再发一次。"],
-    ["pokeNoCd", "戳一戳无冷却", "右键点头像「戳一戳」不再受 10 秒冷却限制，可以连续戳。"],
+    ["pokeNoCd", "戳一戳无冷却", "右键点头像「戳一戳」不再受 10 秒冷却限制，可以连续戳。默认关闭，需要时在这里打开。"],
     ["quoteNoAt", "引用时不带 @", "点「引用」或双击消息引用时，不自动在输入框里插入 @对方。"],
     ["pangu", "发送时自动 pangu", "中英文、中文与数字之间自动补空格。消息开头打两个逗号（,, 或 ，，）则这条不处理，逗号本身也会去掉。"],
     ["arkExternal", "卡片用浏览器打开", "点 B 站等分享卡片（QQ小程序），用电脑默认浏览器打开网页，不再弹「文件已损坏」。"],

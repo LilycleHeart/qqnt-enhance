@@ -37,7 +37,7 @@ const CH = {
     stickerPickDir: "LiteLoader.qq_enhance.stickerPickDir",
 };
 
-const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: true, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+const DEFAULTS = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: false, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
 

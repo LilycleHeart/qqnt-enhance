@@ -126,6 +126,8 @@ check("重复处理保持幂等", msgAgain.msgElements[0].textElement.content ==
     check("ipcMain.emit 上有幂等标记", !!hookState && hookState.installed === true);
     // +1 是第 5 节幂等用例里那次手写 emit（没有走 emitSend，不计 seq）
     check("每个请求只透传一次", originalEmits.length === seq + 1, "emit=" + originalEmits.length + " / send=" + (seq + 1));
+    const cfg = await handlers["LiteLoader.qq_enhance.getConfig"]();
+    check("默认值：pangu 开、戳一戳无冷却关", cfg.pangu === true && cfg.pokeNoCd === false, JSON.stringify({ pangu: cfg.pangu, pokeNoCd: cfg.pokeNoCd }));
 
     console.log(failed ? "SOME FAILED" : "ALL PASS");
     process.exit(failed ? 1 : 0);
