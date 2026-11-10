@@ -23,10 +23,12 @@ main 分支是 **SnowLora 版**：由 SnowLora 外部注入，不修改 QQ 安�
 
 ## 安装
 
-推荐在 QQ 设置 → SnowLora 页安装：
+QQ 增强只从本仓库发布，不在 SnowLora 插件索引里，设置页的「可安装插件」里不会出现它，也不会在线提示更新。
 
-- 插件上架到 [SnowLuma/snowlora-plugins](https://github.com/SnowLuma/snowlora-plugins) 索引后，会出现在「可安装插件」里；该索引当前未公开；
-- 也可以在本仓库 [Releases](https://github.com/LilycleHeart/qqnt-enhance/releases) 下载 `qq-enhance-<版本>.zip`（tag 形如 `v1.3.0+snowlora.2`），用「从本地安装」安装。
+1. 在本仓库 [Releases](https://github.com/LilycleHeart/qqnt-enhance/releases) 下载 `qq-enhance-<版本>.zip`（tag 形如 `v1.3.0+snowlora.2`）；
+2. 打开 QQ 设置 → SnowLora，点「从本地安装」，选这个 zip，确认后安装。
+
+以后更新也是同样的步骤：下载新版 zip，再「从本地安装」一次，会替换旧版本并保留你的开关设置。
 
 装完重启 QQ，QQ 设置窗左侧出现「QQ 增强」即加载成功。
 
@@ -96,7 +98,7 @@ gh release create "v<版本>" --repo LilycleHeart/qqnt-enhance "dist/qq-enhance-
 
 这里**不需要** `--latest=false`：本仓库没有 LiteLoader 一键安装器，`releases/latest` 没有别的用途，SnowLora 版就是这个仓库的最新 release。
 
-发完之后把 `dist/*.index-entry.json` 的内容提 PR 到 [SnowLuma/snowlora-plugins](https://github.com/SnowLuma/snowlora-plugins) 的 `plugins.json`，规范见该仓库的 `docs/`。
+本插件不进 SnowLora 插件索引，发完 release 就结束了，打包产生的 `dist/*.index-entry.json` 不用提交。打包规范见 [SnowLuma/snowlora-plugins](https://github.com/SnowLuma/snowlora-plugins) 的 `docs/`。
 
 ## 风险提示
 
