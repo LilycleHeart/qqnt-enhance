@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> 这是 **LiteLoaderQQNT 版**的 README。
+> SnowLora 版在 [main 分支](https://github.com/LilycleHeart/qqnt-enhance)。
+
 <div align="center">
 
 # ⚡ QQ 增强 · qq-enhance
