@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "qq-enhance",
+  "name": "QQ 增强",
+  "author": "LilycleHeart",
+  "description": "消息与界面的实用增强",
+  "version": "1.3.0+snowlora.2",
+  "minSnowLora": "0.3.0",
+  "rules": [
+    { "name": "qq-enhance", "title_contains": "QQ", "script": "main.js", "enabled": true },
+    { "name": "qq-enhance-settings", "title_contains": "设置", "script": "settings-hook.js", "enabled": true }
+  ]
+}
