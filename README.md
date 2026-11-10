@@ -107,3 +107,7 @@ gh release create "v<版本>" --repo LilycleHeart/qqnt-enhance "dist/qq-enhance-
 ## 问题反馈
 
 到 [Issues](https://github.com/LilycleHeart/qqnt-enhance/issues) 提。请附上 QQ 与 SnowLora 的版本号，以及数据目录里 `plugin.log` 的相关片段。
+
+## 致谢
+
+本插件基于加载器 [SnowLora](https://github.com/SnowLuma/SnowLora) 由 MliKiowa（手瓜一十雪）开发，SnowLuma 维护，MIT 许可。
