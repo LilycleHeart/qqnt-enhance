@@ -110,4 +110,4 @@ gh release create "v<版本>" --repo LilycleHeart/qqnt-enhance "dist/qq-enhance-
 
 ## 致谢
 
-本插件基于加载器 [SnowLora](https://github.com/SnowLuma/SnowLora) 由 MliKiowa（手瓜一十雪）开发，SnowLuma 维护，MIT 许可。
+本插件基于加载器 [SnowLora](https://github.com/SnowLuma/SnowLora) 由 MliKiowa开发，SnowLuma 维护，MIT 许可。
