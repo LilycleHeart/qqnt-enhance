@@ -16,12 +16,15 @@
 //   [x] hookWindow 监听器累积修复（R1）
 //   [x] M5 防撤回异步重写：对齐上游 b226822 的 handle()/restoreOne/collectMessageRecords/预取，
 //       兜底（50ms×11 重试、500ms 硬超时、recentFetches 5s 去重、MAX_RECORDS=1000）原样保留
-const BUILD = '1.3.0+snowlora.2';
+//   [x] 1.3.1 新增「禁止 QQ 更新」：united config 清洗 / 更新状态推送改写 / 热更新包下载阻断，
+//       逻辑移植自 LiteLoaderQQNT-NoUpdate-reload（kill-update 0.4.0），内联在本文件
+const BUILD = '1.3.1';
 const require = process.getBuiltinModule('module').createRequire(snowlora.script);
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const electron = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = electron;
 
 const SLUG = 'qq-enhance';
 const root = path.dirname(snowlora.script);
@@ -48,6 +51,7 @@ const DEFAULTS = {
   showEmojiSearch: true,
   showEmojiDefault: true,
   showEmojiFav: true,
+  noUpdate: true,
 };
 
 fs.mkdirSync(MSG_DIR, { recursive: true });
@@ -105,6 +109,349 @@ function saveConfig() {
     log('save config failed: ' + e.message);
   }
 }
+
+/* ---------- 禁止 QQ 更新（主进程三层拦截） ----------
+ * 原理移植自 LiteLoaderQQNT-NoUpdate-reload（时停系列 kill-update 0.4.0，MIT）：
+ *   1) united config 推送里清掉升级条目和 qqUpdateSwitch / qqUpdateInstallSwitch
+ *   2) 命中升级标记的状态推送改写成「不需要更新」
+ *   3) 在 session.webRequest 层阻断热更新差分包下载
+ * 只处理更新相关字段，不碰消息、动态资源等业务数据。 */
+const UPDATE_KEYS = new Set([
+  'releaseversion', 'lowestversion', 'jumpurl', 'fullupdateurl', 'patchupdateurl',
+  'updateurl', 'updateurl64', 'downloadurl', 'patchurl', 'newversion', 'targetversion',
+  'fullupdate', 'patchupdate', 'updatepackname', 'updatepacksize', 'updatepackmd5',
+]);
+
+const UPDATE_FLAG_KEYS = new Set([
+  'needupdate', 'hasupdaterinfo', 'autoupdate', 'silentupdate', 'issilentupdate',
+  'issilentupgradetask', 'forceupdate',
+]);
+
+const UPDATE_TEXT_KEYS = new Set([
+  'releaseversion', 'newversion', 'targetversion', 'jumpurl', 'fullupdateurl', 'patchupdateurl',
+]);
+
+function isUpdateKey(key) {
+  const k = String(key).toLowerCase();
+  if (UPDATE_KEYS.has(k)) return true;
+  if (k.startsWith('qqupdate')) return true; // qqUpdateSwitch / qqUpdateInstallSwitch
+  if (k === 'needupdate' || k === 'hasupdaterinfo') return true;
+  return false;
+}
+
+function isUpdateEntry(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value).map(k => k.toLowerCase());
+  const has = k => keys.includes(k);
+  if (has('releaseversion') && (has('jumpurl') || has('lowestversion') || has('fullupdateurl') || has('patchupdateurl') || has('updateurl'))) return true;
+  if (has('releaseversion') && (has('needupdate') || has('hasupdaterinfo'))) return true;
+  if (has('fullupdateurl') || has('patchupdateurl') || has('updatepackmd5')) return true;
+  return false;
+}
+
+function scrubValue(value, depth, log) {
+  if (depth > 12 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    const kept = [];
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      if (isUpdateEntry(item)) {
+        if (log) log('丢弃更新配置条目 #' + i + ' ' + JSON.stringify(item).slice(0, 200));
+        continue;
+      }
+      kept.push(scrubValue(item, depth + 1, log));
+    }
+    return kept;
+  }
+  const out = {};
+  let dropped = 0;
+  for (const key of Object.keys(value)) {
+    if (isUpdateKey(key)) {
+      dropped++;
+      continue;
+    }
+    const child = value[key];
+    if (typeof child === 'string' && child.length > 2 && (child[0] === '{' || child[0] === '[')) {
+      out[key] = scrubJsonString(child, depth + 1, log);
+      continue;
+    }
+    out[key] = scrubValue(child, depth + 1, log);
+  }
+  if (dropped && log) log('丢弃更新字段 x' + dropped);
+  return out;
+}
+
+function scrubJsonString(text, depth, log) {
+  if (depth > 12) return text;
+  if (text.indexOf('releaseVersion') === -1 &&
+    text.indexOf('qqUpdate') === -1 &&
+    text.indexOf('jumpUrl') === -1 &&
+    text.indexOf('fullUpdateUrl') === -1) return text;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return text;
+  }
+  const scrubbed = JSON.stringify(scrubValue(parsed, depth + 1, log));
+  if (scrubbed === text) return text;
+  if (log) log('united config 已清洗: ' + text.length + ' -> ' + scrubbed.length + ' 字节');
+  return scrubbed;
+}
+
+function scrubArgs(args, log) {
+  let touched = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (typeof arg === 'string') {
+      const next = scrubJsonString(arg, 0, log);
+      if (next !== arg) {
+        args[i] = next;
+        touched = true;
+      }
+      continue;
+    }
+    if (arg && typeof arg === 'object') {
+      args[i] = scrubValue(arg, 0, log);
+      touched = true;
+    }
+  }
+  return touched;
+}
+
+// 只有推送里真的出现「升级专用标记」才动手，避免误伤普通业务推送
+function hasUpdateMarker(node, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return false;
+  if (Array.isArray(node)) {
+    for (const item of node) if (hasUpdateMarker(item, depth + 1)) return true;
+    return false;
+  }
+  let hasRelease = false;
+  let secondary = false;
+  let hasUpdaterInfo = false;
+  for (const key of Object.keys(node)) {
+    const k = key.toLowerCase();
+    if (k === 'hasupdaterinfo') hasUpdaterInfo = true;
+    else if (k === 'releaseversion') hasRelease = true;
+    else if (k === 'jumpurl' || k === 'lowestversion' || k === 'fullupdateurl' ||
+      k === 'patchupdateurl' || k === 'updateurl' || k === 'needupdate' ||
+      k === 'silentupdate' || k === 'issilentupgradetask') secondary = true;
+  }
+  if (hasUpdaterInfo) return true;
+  if (hasRelease && secondary) return true;
+  for (const key of Object.keys(node)) {
+    const v = node[key];
+    if (v && typeof v === 'object' && hasUpdateMarker(v, depth + 1)) return true;
+  }
+  return false;
+}
+
+function fixUpdateFlags(node, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return false;
+  if (Array.isArray(node)) {
+    let hit = false;
+    for (const item of node) hit = fixUpdateFlags(item, depth + 1) || hit;
+    return hit;
+  }
+  let hit = false;
+  for (const key of Object.keys(node)) {
+    const value = node[key];
+    const k = key.toLowerCase();
+    if (value && typeof value === 'object') {
+      hit = fixUpdateFlags(value, depth + 1) || hit;
+      continue;
+    }
+    // 不带 dialogVisible：那是通用字段，改了会伤到别的弹窗
+    if (UPDATE_FLAG_KEYS.has(k)) {
+      if (value === true) {
+        node[key] = false;
+        hit = true;
+      }
+      continue;
+    }
+    if (UPDATE_TEXT_KEYS.has(k)) {
+      if (typeof value === 'string' && value !== '') {
+        node[key] = '';
+        hit = true;
+      }
+    }
+  }
+  return hit;
+}
+
+// 快速查找字符串里有没有 united config 特征，避免对每个大对象都 JSON.stringify
+function containsUnitedMarker(node, depth) {
+  if (!node || depth > 8) return false;
+  if (typeof node === 'string') return node.indexOf('onUnitedConfigUpdate') !== -1;
+  if (typeof node !== 'object') return false;
+  for (const key of Object.keys(node)) {
+    if (containsUnitedMarker(node[key], depth + 1)) return true;
+  }
+  return false;
+}
+
+// 只拦 QQNT 热更新通道，不碰 dynamic_module 等业务资源
+const BLOCK_RE = /qqpatch\.gtimg\.cn\/hotUpdate|\/hotUpdate_new|hotUpdate\/[^/]*\.(patch|zip|7z)|\/patch\/.*(fruitade|diff)/i;
+
+function createUpdateGuard({ electron, state }) {
+  let logCount = 0;
+  function note(message) {
+    if (++logCount > 200) return; // united config 推送很频繁，限流
+    try {
+      state.log(message);
+    } catch (e) {}
+  }
+
+  function filterSend(channel, args) {
+    const ch = String(channel || '');
+    if (/unitedconfig/i.test(ch)) {
+      if (scrubArgs(args, note)) note('拦截 united config channel=' + ch);
+      return;
+    }
+
+    let fixed = false;
+    for (const arg of args) {
+      if (arg && typeof arg === 'object' && hasUpdateMarker(arg, 0) && fixUpdateFlags(arg, 0)) fixed = true;
+    }
+    if (fixed) note('拦截更新推送 channel=' + ch);
+
+    // 有的版本把 united config 塞在别的 channel 里，按内容特征兜一层
+    for (const arg of args) {
+      if (arg && typeof arg === 'object' && containsUnitedMarker(arg, 0)) {
+        if (scrubArgs(args, note)) note('拦截 united config (channel=' + ch + ')');
+        break;
+      }
+    }
+  }
+
+  function patchWebContents(wc) {
+    if (!wc || state.patched.has(wc)) return;
+    state.patched.add(wc);
+    try {
+      const originalSend = wc.send.bind(wc);
+      wc.send = function (channel, ...args) {
+        try {
+          if (state.enabled()) filterSend(channel, args);
+        } catch (e) {
+          note('send 拦截异常: ' + (e && e.message));
+        }
+        return originalSend(channel, ...args);
+      };
+      if (typeof wc.postMessage === 'function') {
+        const originalPost = wc.postMessage.bind(wc);
+        wc.postMessage = function (channel, message, ...rest) {
+          try {
+            if (state.enabled() && message && typeof message === 'object') {
+              scrubValue(message, 0, note);
+              if (hasUpdateMarker(message, 0) && fixUpdateFlags(message, 0)) note('拦截 postMessage 更新推送');
+            }
+          } catch (e) {}
+          return originalPost(channel, message, ...rest);
+        };
+      }
+    } catch (e) {
+      note('挂载 webContents 失败: ' + (e && e.message));
+    }
+  }
+
+  function hookSession(ses) {
+    if (!ses || !ses.webRequest || state.sessions.has(ses)) return;
+    state.sessions.add(ses);
+    try {
+      ses.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
+        try {
+          if (state.enabled() && details && BLOCK_RE.test(String(details.url || ''))) {
+            note('阻断更新包请求: ' + details.url);
+            callback({ cancel: true });
+            return;
+          }
+        } catch (e) {}
+        callback({});
+      });
+      note('已挂载更新包过滤: ' + (ses.storagePath || 'session'));
+    } catch (e) {
+      note('挂载更新包过滤失败: ' + (e && e.message));
+    }
+  }
+
+  function sweep() {
+    try {
+      const all = electron.webContents ? electron.webContents.getAllWebContents() : [];
+      for (const wc of all) {
+        patchWebContents(wc);
+        try {
+          if (wc.session) hookSession(wc.session);
+        } catch (e) {}
+      }
+      if (electron.session) hookSession(electron.session.defaultSession);
+    } catch (e) {}
+  }
+
+  function install() {
+    if (!state.installed) {
+      state.installed = true;
+      try {
+        const app = electron.app;
+        if (app) {
+          app.on('web-contents-created', (_event, wc) => patchWebContents(wc));
+          app.on('session-created', ses => hookSession(ses));
+        }
+        // 少量更新状态走 ipcMain.handle（全局只包一次，避免热重载叠套娃）
+        const ipcMain = electron.ipcMain;
+        if (ipcMain && typeof ipcMain.handle === 'function' && !state.handlePatched) {
+          state.handlePatched = true;
+          const originalHandle = ipcMain.handle.bind(ipcMain);
+          ipcMain.handle = function (channel, listener) {
+            if (/unitedconfig/i.test(String(channel))) {
+              return originalHandle(channel, async (...a) => {
+                const result = await listener(...a);
+                try {
+                  return state.enabled() ? scrubValue(result, 0, note) : result;
+                } catch (e) {
+                  return result;
+                }
+              });
+            }
+            return originalHandle(channel, listener);
+          };
+        }
+      } catch (e) {
+        note('注册更新拦截事件失败: ' + (e && e.message));
+      }
+    }
+    // app ready 前 defaultSession 可能取不到：ready 后补一次。
+    if (!state.readyHooked && electron.app && typeof electron.app.whenReady === 'function') {
+      state.readyHooked = true;
+      try {
+        electron.app.whenReady().then(sweep, () => {});
+      } catch (e) {}
+    }
+    // 每次（含热重载）补一次现有窗口和 session
+    sweep();
+  }
+
+  return { install, patchWebContents, hookSession };
+}
+
+// 状态挂在 globalThis 上，热重载后复用已有的 WeakSet 和事件注册，
+// 只替换 enabled()/log() 闭包，避免 wc.send 被一层层包下去。
+const NO_UPDATE_KEY = Symbol.for('qqEnhance.noUpdateGuard');
+let noUpdateState = globalThis[NO_UPDATE_KEY];
+if (!noUpdateState) {
+  noUpdateState = {
+    installed: false,
+    handlePatched: false,
+    enabled: () => true,
+    log: () => {},
+    patched: new WeakSet(),
+    sessions: new WeakSet(),
+  };
+  Object.defineProperty(globalThis, NO_UPDATE_KEY, { value: noUpdateState, configurable: true });
+}
+noUpdateState.enabled = () => !!config.noUpdate;
+noUpdateState.log = message => log('[no-update] ' + message);
+const updateGuard = createUpdateGuard({ electron, state: noUpdateState });
+updateGuard.install();
 
 /* ---------- 防撤回：存储 ---------- */
 const MAX_CACHE = 5000;
@@ -669,6 +1016,11 @@ function inject(wc) {
 function hookWindow(window) {
   const wc = window.webContents;
   if (!isAlive(wc)) return;
+  // 禁止更新：补一次 wc.send / session 拦截（app 事件之外再兜一层）
+  try {
+    updateGuard.patchWebContents(wc);
+    if (wc.session) updateGuard.hookSession(wc.session);
+  } catch (e) {}
   // 同一个 wc 只挂一次 hook。
   // 设置窗常见"window_created 一次 + settings-hook.js 再调 __qqEnhanceEnsureSettings 一次"，
   // 重复注册 did-finish-load/dom-ready/console-message 会不断累积（R1）。

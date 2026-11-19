@@ -17,6 +17,7 @@ main 分支是 **SnowLora 版**：由 SnowLora 外部注入，不修改 QQ 安�
 | **引用时不带 @** | 点「引用」或双击消息引用后，删掉 QQ 自动插入的 `@对方` |
 | **戳一戳无冷却** | 右键头像点「戳一戳」不再受 10 秒冷却限制，可以连续戳。点的时候把界面自己的处理截下来，直接调内核 `sendNudge` 发，冷却判断不会跑。**默认关闭**，需要时在设置页打开 |
 | **卡片用浏览器打开** | 点 B 站、腾讯文档等「QQ小程序」分享卡片，取卡片里的网页链接用默认浏览器打开，不再弹「文件已损坏，请重新安装QQ」。没有网页链接的卡片照旧交给 QQ |
+| **禁止 QQ 更新** | 拦截更新配置推送、更新包下载和已弹出的更新提示，并隐藏「检查更新」入口。 |
 | **本地表情包** | 表情面板底部多一个「本地表情」分类：每个子文件夹是一个分组，另有独立的收藏分组。点一下直接发送，Ctrl/Shift + 点击发完不收起面板；底栏文件夹可拖动排序，设置页能隐藏 QQ 自带的「搜索表情」「默认表情」「我的收藏」 |
 
 设置：QQ 设置窗左侧「**QQ 增强**」，每项单独开关，改了立刻生效。
@@ -111,3 +112,4 @@ gh release create "v<版本>" --repo LilycleHeart/qqnt-enhance "dist/qq-enhance-
 ## 致谢
 
 本插件基于加载器 [SnowLora](https://github.com/SnowLuma/SnowLora) 由 MliKiowa开发，SnowLuma 维护，MIT 许可。
+「禁止 QQ 更新」功能基于 [LiteLoaderQQNT-NoUpdate-reload](https://github.com/Simon404Error/LiteLoaderQQNT-NoUpdate-reload) 
