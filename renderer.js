@@ -557,7 +557,7 @@ function installStickers(api, getConfig, toast) {
 // 消息数据从 .message 元素上的 __VUE__[0].props.msgRecord 读（QQ 9.9.36 实测）。
 
 const api = window.qq_enhance;
-let config = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: false, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true };
+let config = { antiRecall: true, chatPos: true, repeat: true, pokeNoCd: false, quoteNoAt: true, arkExternal: true, pangu: true, stickers: true, stickerDir: "", showEmojiSearch: true, showEmojiDefault: true, showEmojiFav: true, noUpdate: true };
 let stickers = null;
 
 function recordOf(el) {
@@ -1009,6 +1009,107 @@ function arkTarget(e) {
         if (type === "click") api.openExternal(url).then(ok => toast(ok ? "已用浏览器打开" : "打不开这个链接")).catch(() => {});
     }, true));
 
+/* ════════════════ 6. 禁止 QQ 更新（渲染层兜底） ════════════════
+ * 主进程已经拦掉 united config / 更新状态推送和更新包下载，这里只处理
+ * 已经弹出来的更新对话框，以及左下角「≡」菜单里的「检查更新」入口。
+ * 移植自 LiteLoaderQQNT-NoUpdate-reload 的 renderer.js。 */
+const UPDATE_DIALOG_TEXT = /立即更新|马上更新|立即升级|马上升级|立即重启|重启更新|升级到|版本更新/;
+const UPDATE_MENU_TEXTS = { "检查更新": 1, "检查新版本": 1, "检测更新": 1, "检查升级": 1, "检测新版本": 1 };
+const noUpdateHidden = [];
+let noUpdateLastBroad = 0;
+let noUpdateLast = 0;
+let noUpdateKilled = 0;
+
+function noUpdateNorm(el) { return (el.textContent || "").replace(/\s+/g, "").trim(); }
+
+function hideUpdateRow(el) {
+    // 一路往上：只要父节点文字仍然只有「检查更新」，就说明这行还没被包完
+    const key = noUpdateNorm(el);
+    let row = el;
+    for (let i = 0; i < 8; i++) {
+        const p = row.parentElement;
+        if (!p || noUpdateNorm(p) !== key) break;
+        row = p;
+    }
+    if (row.getAttribute("data-qqe-no-update") === "1") return false;
+    row.setAttribute("data-qqe-no-update", "1");
+    row.style.display = "none";
+    noUpdateHidden.push(row);
+    if (noUpdateHidden.length === 1) console.log("[QQ 增强] 已隐藏「检查更新」入口");
+    return true;
+}
+
+function restoreUpdateRows() {
+    while (noUpdateHidden.length) {
+        const el = noUpdateHidden.pop();
+        try {
+            el.style.display = "";
+            el.removeAttribute("data-qqe-no-update");
+        } catch (e) {}
+    }
+}
+
+function closeUpdateDialog(dialog) {
+    try {
+        const closeIcon = dialog.querySelector(".q-dialog-header i, .q-dialog-header .q-icon, .q-dialog-header button");
+        if (closeIcon && typeof closeIcon.click === "function") closeIcon.click();
+        if (dialog.parentNode) dialog.parentNode.removeChild(dialog);
+        if (++noUpdateKilled <= 5) console.log("[QQ 增强] 已关闭更新弹窗");
+    } catch (e) {}
+}
+
+function scanUpdateDialogs() {
+    const dialogs = document.querySelectorAll(
+        ".update-dialog, .force-update-dialog, [class*='update-dialog'], .q-dialog[data-type='update']"
+    );
+    for (const dialog of dialogs) closeUpdateDialog(dialog);
+
+    const all = document.querySelectorAll(".q-dialog, .q-dialog-main");
+    for (const dialog of all) {
+        const buttons = dialog.querySelectorAll("button, .q-button");
+        for (const btn of buttons) {
+            if (UPDATE_DIALOG_TEXT.test((btn.textContent || "").trim())) {
+                closeUpdateDialog(dialog);
+                break;
+            }
+        }
+    }
+}
+
+function scanUpdateEntries() {
+    let hit = 0;
+    const quick = document.querySelectorAll(".setting-item-update, .menu-item-label, [role='menuitem']");
+    for (const el of quick) {
+        if (UPDATE_MENU_TEXTS[noUpdateNorm(el)] && hideUpdateRow(el)) hit++;
+    }
+    if (hit > 0) return;
+
+    // 兜底：结构改名/换措辞时按文字找，最多每 5s 扫一次全文档
+    const now = Date.now();
+    if (now - noUpdateLastBroad < 5000) return;
+    noUpdateLastBroad = now;
+    const all = document.querySelectorAll("span, div, a, li, button");
+    for (const el of all) {
+        if (el.childElementCount > 2 || !el.firstChild) continue;
+        const raw = el.textContent || "";
+        if (raw.length > 12) continue;
+        if (!UPDATE_MENU_TEXTS[raw.replace(/\s+/g, "").trim()]) continue;
+        hideUpdateRow(el);
+    }
+}
+
+function scanNoUpdate() {
+    if (!config.noUpdate) {
+        if (noUpdateHidden.length) restoreUpdateRows();
+        return;
+    }
+    const now = Date.now();
+    if (now - noUpdateLast < 300) return;
+    noUpdateLast = now;
+    try { scanUpdateDialogs(); } catch (e) {}
+    try { scanUpdateEntries(); } catch (e) {}
+}
+
 /* ════════════════ 启动 ════════════════ */
 function start() {
     if (!api || window.__qqEnhanceStarted) return;
@@ -1019,8 +1120,13 @@ function start() {
     style.textContent = AR_CSS;
     (document.head || document.documentElement).appendChild(style);
 
-    api.getConfig().then(cfg => { if (cfg) config = cfg; }).catch(() => {});
-    api.onConfigChanged(cfg => { if (cfg) config = cfg; reloadRecalled(); if (stickers) { stickers.ensure(); stickers.reload(); } });
+    api.getConfig().then(cfg => { if (cfg) config = cfg; scanNoUpdate(); }).catch(() => {});
+    api.onConfigChanged(cfg => {
+        if (cfg) config = cfg;
+        reloadRecalled();
+        scanNoUpdate();
+        if (stickers) { stickers.ensure(); stickers.reload(); }
+    });
     reloadRecalled();
     api.onRecalled((id, nick) => { recalled.set(String(id), nick || "对方"); markRecalled(); });
     if (location.hash.indexOf("#/setting") !== 0) stickers = installStickers(api, () => config, toast);
@@ -1029,10 +1135,20 @@ function start() {
     let timer = 0;
     new MutationObserver(() => {
         if (timer) return;
-        timer = setTimeout(() => { timer = 0; markRecalled(); checkPeer(); installQuoteWatch(); if (stickers) stickers.ensure(); }, 150);
+        timer = setTimeout(() => {
+            timer = 0;
+            markRecalled();
+            checkPeer();
+            installQuoteWatch();
+            scanNoUpdate();
+            if (stickers) stickers.ensure();
+        }, 150);
     }).observe(document.body, { childList: true, subtree: true });
 
     installQuoteWatch();
+    // 禁止 QQ 更新：DOM 变动时顺带扫（内部限流 300ms），另加低频定时兜底
+    scanNoUpdate();
+    setInterval(scanNoUpdate, 1000);
 }
 
 if (document.body) start();
@@ -1048,6 +1164,7 @@ const FEATURES = [
     ["quoteNoAt", "引用时不带 @", "点「引用」或双击消息引用时，不自动在输入框里插入 @对方。"],
     ["pangu", "发送时自动 pangu", "中英文、中文与数字之间自动补空格。消息开头打两个逗号（,, 或 ，，）则这条不处理，逗号本身也会去掉。"],
     ["arkExternal", "卡片用浏览器打开", "点 B 站等分享卡片（QQ小程序），用电脑默认浏览器打开网页，不再弹「文件已损坏」。"],
+    ["noUpdate", "禁止 QQ 更新", "拦截更新配置推送、更新包下载和已弹出的更新提示，并隐藏「检查更新」入口。QQ 将停留在当前版本。"],
     ["stickers", "本地表情包", "表情面板底部多一个「本地表情」分类，发送表情文件夹里的图片。每个子文件夹是一个分组，另有收藏分组。"],
 ];
 
